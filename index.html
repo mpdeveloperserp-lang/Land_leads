@@ -3,7 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Land Leads ERP — Prototype (Phase 1)</title>
+<title>Land Leads ERP — Working Model</title>
+<!--
+  FIREBASE SDK — loaded here so the app is genuinely wired to Firestore/Storage,
+  not just documented. If your Firebase config below is still the placeholder,
+  or these scripts can't load (e.g. no network), the app falls back to an
+  in-memory demo automatically — see FIREBASE_CONFIG and boot() further down.
+-->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<!-- Export libraries — used by the Reports page's Export Excel / Export PDF buttons.
+     If these can't load (no network), exports fall back to CSV / browser print. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root{
     --navy:#1B2A4A; --navy-light:#28406e; --gold:#B8912F; --gold-light:#e6c874;
@@ -13,41 +27,56 @@
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
-  header{background:var(--navy);color:#fff;padding:14px 24px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;}
-  header .brand{display:flex;flex-direction:column;}
-  header .brand .co{font-size:11px;letter-spacing:1.5px;color:var(--gold-light);font-weight:700;}
-  header .brand .title{font-size:19px;font-weight:700;}
-  header .actions{display:flex;gap:10px;align-items:center;}
+  .app-shell{display:flex;min-height:100vh;align-items:stretch;}
+  .sidebar{width:212px;flex:0 0 212px;background:#fff;border-right:1px solid var(--border);display:flex;flex-direction:column;padding:0;position:sticky;top:0;height:100vh;overflow-y:auto;}
+  .sidebar-brand{padding:18px 20px 16px;border-bottom:1px solid var(--border);}
+  .sidebar-brand .co{display:block;font-size:11px;letter-spacing:1.5px;color:var(--gold);font-weight:700;}
+  .sidebar-brand .title{display:block;font-size:15.5px;font-weight:700;color:var(--navy);margin-top:3px;line-height:1.3;}
+  .sidebar nav{display:flex;flex-direction:column;gap:1px;padding:10px 0;flex:1;}
+  .sidebar nav button{background:none;border:none;text-align:left;padding:11px 20px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-left:3px solid transparent;width:100%;}
+  .sidebar nav button:hover{background:#F6F8FB;color:var(--navy);}
+  .sidebar nav button.active{color:var(--navy);background:#EEF2F8;border-left-color:var(--gold);}
+  .nav-sub{display:flex;flex-direction:column;}
+  .nav-sub button{padding:8px 20px 8px 34px;font-size:12.5px;font-weight:500;}
+  .icon-btn{border:1px solid var(--border);background:#fff;border-radius:5px;width:27px;height:27px;font-size:13px;line-height:1;cursor:pointer;margin-right:4px;color:var(--muted);}
+  .icon-btn:hover{border-color:var(--teal);color:var(--teal);}
+  .icon-del:hover{border-color:var(--danger);color:var(--danger);}
+  .icon-ok{color:var(--ok);border-color:#bfe3d1;}
+  .sidebar-foot{padding:14px 20px 18px;border-top:1px solid var(--border);}
+  .main-col{flex:1;min-width:0;display:flex;flex-direction:column;}
+  .topbar{background:#fff;border-bottom:1px solid var(--border);padding:15px 26px;display:flex;justify-content:space-between;align-items:center;}
+  .topbar .page-title{font-size:17px;font-weight:700;color:var(--navy);}
+  main{padding:20px 26px 60px;max-width:1500px;width:100%;margin:0 auto;}
   .btn{border:none;border-radius:6px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;transition:.15s;}
   .btn-gold{background:var(--gold);color:#2b2200;}
   .btn-gold:hover{background:var(--gold-light);}
   .btn-teal{background:var(--teal);color:#fff;}
   .btn-teal:hover{background:var(--teal-light);}
-  .btn-outline{background:transparent;border:1px solid rgba(255,255,255,.5);color:#fff;}
-  .btn-outline:hover{background:rgba(255,255,255,.12);}
   .btn-ghost{background:var(--border);color:var(--text);}
   .btn-ghost:hover{background:#d8dce4;}
+  .btn-ghost:disabled{opacity:.45;cursor:default;}
   .btn-danger{background:var(--danger);color:#fff;}
   .btn-sm{padding:5px 10px;font-size:12px;border-radius:5px;}
-  nav{background:#fff;border-bottom:1px solid var(--border);padding:0 24px;display:flex;gap:4px;}
-  nav button{background:none;border:none;padding:13px 16px;font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;}
-  nav button.active{color:var(--navy);border-bottom-color:var(--gold);}
-  main{padding:20px 24px 60px;max-width:1400px;margin:0 auto;}
   .banner{background:var(--warn-bg);border:1px solid #edd9ab;color:#6b4c05;padding:12px 16px;border-radius:8px;margin-bottom:18px;font-size:13.5px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start;}
   .banner b{color:var(--navy);}
   .banner button{background:none;border:none;color:#6b4c05;font-weight:700;cursor:pointer;font-size:16px;line-height:1;}
   .grid{display:grid;gap:14px;}
   .cards4{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));}
   .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;}
+  .stat{cursor:pointer;transition:.15s;}
+  .stat:hover{border-color:var(--teal);box-shadow:0 2px 10px rgba(0,0,0,.06);}
   .stat .label{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700;}
   .stat .value{font-size:26px;font-weight:700;color:var(--navy);margin-top:4px;}
   .stat .sub{font-size:12px;color:var(--muted);margin-top:2px;}
+  .page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;}
+  .page-header h1{font-size:19px;color:var(--navy);margin:0;}
   h2.section-title{font-size:15px;color:var(--navy);margin:26px 0 10px;font-weight:700;display:flex;align-items:center;gap:8px;}
   h2.section-title .tag{background:var(--teal);color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;font-weight:700;letter-spacing:.4px;}
   table{width:100%;border-collapse:collapse;font-size:13px;}
   table th{text-align:left;background:#F8F9FB;color:var(--muted);font-weight:700;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px;padding:9px 10px;border-bottom:1px solid var(--border);}
   table td{padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
-  table tr.clickable:hover{background:#F6F8FB;cursor:pointer;}
+  table tr.clickable-row:hover{background:#F6F8FB;cursor:pointer;}
+  table.leads-table th:first-child, table.leads-table td:first-child{width:30px;text-align:center;padding-right:0;}
   .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;}
   .badge-ok{background:var(--ok-bg);color:var(--ok);}
   .badge-warn{background:var(--warn-bg);color:var(--warn);}
@@ -55,7 +84,9 @@
   .badge-navy{background:#e7ecf5;color:var(--navy);}
   .badge-gold{background:#faf1da;color:#8a6a10;}
   .badge-muted{background:#eef0f3;color:var(--muted);}
-  .funnel-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12.5px;}
+  .conn-dot{display:inline-flex;align-items:center;gap:5px;}
+  .funnel-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12.5px;cursor:pointer;padding:3px;border-radius:6px;}
+  .funnel-row:hover{background:#F6F8FB;}
   .funnel-row .flabel{width:170px;flex:0 0 170px;color:var(--navy);font-weight:600;}
   .funnel-row .fbar-wrap{flex:1;background:#eceff3;border-radius:6px;overflow:hidden;height:22px;position:relative;}
   .funnel-row .fbar{background:linear-gradient(90deg,var(--teal),var(--navy));height:100%;border-radius:6px;}
@@ -73,6 +104,15 @@
   .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center;}
   .toolbar input, .toolbar select{padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:#fff;}
   .toolbar input[type=text]{min-width:220px;}
+  .filter-panel{margin-bottom:14px;}
+  .filter-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:10px;}
+  .index-nav{display:flex;gap:2px;flex-wrap:wrap;}
+  .idx-btn{border:1px solid var(--border);background:#fff;padding:4px 7px;font-size:11px;border-radius:4px;cursor:pointer;color:var(--muted);font-weight:600;}
+  .idx-btn:hover{border-color:var(--teal);color:var(--teal);}
+  .idx-btn.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+  .pagination{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:12.5px;color:var(--muted);flex-wrap:wrap;gap:8px;}
+  .page-btns{display:flex;gap:6px;align-items:center;}
+  .page-num{font-weight:700;color:var(--navy);padding:0 6px;}
   .modal-overlay{position:fixed;inset:0;background:rgba(15,20,35,.55);display:flex;align-items:flex-start;justify-content:center;padding:30px 16px;overflow-y:auto;z-index:100;}
   .modal{background:#fff;border-radius:12px;max-width:760px;width:100%;padding:0;box-shadow:0 20px 60px rgba(0,0,0,.3);}
   .modal-head{background:var(--navy);color:#fff;padding:16px 22px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center;}
@@ -82,9 +122,10 @@
   .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;}
   .form-grid .full{grid-column:1/-1;}
   label{display:block;font-size:11.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.3px;margin-bottom:4px;}
-  input[type=text],input[type=date],input[type=number],input[type=datetime-local],select,textarea{
+  input[type=text],input[type=date],input[type=number],input[type=datetime-local],input[type=file],select,textarea{
     width:100%;padding:8px 9px;border:1px solid var(--border);border-radius:6px;font-size:13.5px;font-family:inherit;background:#fff;color:var(--text);
   }
+  input[type=file]{padding:6px;font-size:12px;}
   textarea{resize:vertical;min-height:44px;}
   .field-pair{display:flex;gap:6px;}
   .field-pair input{flex:1;}
@@ -102,61 +143,90 @@
   .history-item .when{color:var(--muted);font-size:11px;}
   .doc-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px;}
   .doc-row:last-child{border-bottom:none;}
-  .inline-add{display:flex;gap:6px;margin-top:8px;}
-  .inline-add input, .inline-add select{flex:1;}
+  .doc-row a{color:var(--teal);text-decoration:none;font-weight:600;}
+  .inline-add{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+  .inline-add input, .inline-add select{flex:1;min-width:120px;}
   .empty{color:var(--muted);font-size:12.5px;font-style:italic;padding:6px 0;}
   .setup-code{background:#111827;color:#d1e7ff;font-family:ui-monospace,Consolas,monospace;font-size:11.5px;padding:12px 14px;border-radius:8px;overflow-x:auto;white-space:pre;}
-  .callitem{display:flex;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--border);font-size:12.5px;}
+  .callitem{display:flex;justify-content:space-between;padding:7px 4px;border-bottom:1px solid var(--border);font-size:12.5px;cursor:pointer;border-radius:4px;}
+  .callitem:hover{background:#F6F8FB;}
   .callitem:last-child{border-bottom:none;}
+  .clickable-row:hover{cursor:pointer;}
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
-  @media (max-width:820px){.two-col{grid-template-columns:1fr;} .form-grid{grid-template-columns:1fr;}}
+  @media (max-width:820px){.two-col{grid-template-columns:1fr;} .form-grid{grid-template-columns:1fr;} .app-shell{flex-direction:column;} .sidebar{position:static;height:auto;width:100%;flex:0 0 auto;}}
   .footer-note{text-align:center;color:var(--muted);font-size:11.5px;margin-top:40px;}
 </style>
 </head>
 <body>
 
-<header>
-  <div class="brand">
-    <span class="co">MP DEVELOPERS</span>
-    <span class="title">Land Leads ERP — Prototype (Phase 1)</span>
-  </div>
-  <div class="actions">
-    <button class="btn btn-gold" id="btn-new-lead">+ New Lead</button>
-  </div>
-</header>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="co">MP DEVELOPERS</span>
+      <span class="title">Land Leads ERP</span>
+    </div>
+    <nav id="tabs">
+      <button data-view="dashboard" class="active">Dashboard</button>
+      <button data-view="progress" id="nav-progress-btn">Progress Details</button>
+      <button data-view="list">All Leads</button>
+      <button data-view="reports">Reports</button>
+      <button data-view="configure">Configure</button>
+      <button data-view="masters">Masters</button>
+      <button data-view="setup">Connect to Firebase</button>
+    </nav>
+    <div class="sidebar-foot" id="conn-badge"></div>
+  </aside>
 
-<nav id="tabs">
-  <button data-view="dashboard" class="active">Dashboard</button>
-  <button data-view="board">Pipeline Board</button>
-  <button data-view="list">All Leads</button>
-  <button data-view="setup">Connect to Firebase</button>
-</nav>
-
-<main>
-  <div id="banner-holder"></div>
-  <div id="view-root"></div>
-  <div class="footer-note">Phase 1 prototype — running on in-memory sample data. See the "Connect to Firebase" tab to wire this up to your own Firestore project for real persistence.</div>
-</main>
+  <div class="main-col">
+    <div class="topbar">
+      <span class="page-title" id="page-title">Dashboard</span>
+    </div>
+    <main>
+      <div id="banner-holder"></div>
+      <div id="view-root"><div class="empty">Loading…</div></div>
+      <div class="footer-note" id="footer-note"></div>
+    </main>
+  </div>
+</div>
 
 <div id="modal-root"></div>
 
 <script>
 /* =========================================================================
-   LAND LEADS ERP — PHASE 1 PROTOTYPE
+   LAND LEADS ERP — WORKING MODEL
    MP Developers | Built to accompany "Land Leads ERP — Recommendations & Roadmap"
 
-   DATA LAYER
-   ----------
-   This prototype runs on an in-memory data layer (the DB object below) so it
-   is fully interactive right out of the box with no setup required. When you
-   are ready to go live, see the "Connect to Firebase" tab in the app itself
-   (and the FIREBASE WIRING block near the bottom of this script) for the
-   drop-in Firestore + Storage implementation that replaces it — same pattern
-   as your Sales Dashboard and Document Management System.
+   This version is wired to real Firebase: Firestore for the leads and every
+   master list (channel partners, villages, executives, land classifications,
+   drop/on-hold reasons, lead sources), and Storage for document uploads.
+
+   >>> TO GO LIVE: paste your Firebase project config into FIREBASE_CONFIG
+   below. Until you do, or if the SDK can't load, the app runs on an
+   in-memory demo (MemoryDB) automatically, so it's always usable. <<<
    ========================================================================= */
 
-// ---- Reference data -------------------------------------------------
-const STAGES = [
+// ---- 1. YOUR FIREBASE CONFIG -------------------------------------------
+// Replace with the config object from Firebase Console → Project Settings →
+// General → Your apps → SDK setup and configuration. Client-side Firebase
+// config is not a secret — access is controlled by your Firestore/Storage
+// security rules (see the "Connect to Firebase" tab), not by hiding this.
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAe_9Y00TN7NfggpYELdQulpXgCUW7CwZ0",
+  authDomain: "mp-land-leads.firebaseapp.com",
+  projectId: "mp-land-leads",
+  storageBucket: "mp-land-leads.firebasestorage.app",
+  messagingSenderId: "933967050983",
+  appId: "1:933967050983:web:1d3c969ee547c9d92e0a42"
+};
+
+// ---- Pipeline stages ------------------------------------------------------
+// The stage KEYS and their order are fixed by the process (the stage-gating
+// rules below refer to specific keys), but each stage's Label and SLA (days)
+// are admin-editable on the Masters page — see the "Stages / Pipeline"
+// master. STAGES is recomputed from DB via refreshStagesFromDB() at boot and
+// whenever the Stages master is saved.
+const STAGE_KEYS = ['new','contacted','site_visited','under_eval','doc_legal','negotiation','closed'];
+const DEFAULT_STAGE_CONFIG = [
   { key:'new',            label:'New',                    sla:2  },
   { key:'contacted',      label:'Contacted',               sla:7  },
   { key:'site_visited',   label:'Site Visited',            sla:5  },
@@ -165,15 +235,84 @@ const STAGES = [
   { key:'negotiation',    label:'Negotiation',             sla:14 },
   { key:'closed',         label:'Closed',                  sla:null },
 ];
-const STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
+let STAGES = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
+let STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
 const stageLabel = k => (STAGES.find(s=>s.key===k)||{}).label || k;
-
-const LEAD_SOURCES = ['Website Enquiry','Channel Partner','Direct / Walk-in','Referral','Field Survey','Cold Call','Other'];
-const LAND_CLASSES = ['Agricultural','DTCP Approved Layout','Patta Land','Government Land','Disputed / Litigation','Other'];
-const DROP_REASONS = ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'];
-const HOLD_REASONS = ['Awaiting owner decision','Budget deferred','Litigation pending','Awaiting documents','Other'];
+function refreshStagesFromDB(){
+  const rows = (DB && DB.getStages) ? DB.getStages() : null;
+  STAGES = STAGE_KEYS.map(k=>{
+    const stored = rows && rows.find(r=>r.key===k);
+    const def = DEFAULT_STAGE_CONFIG.find(d=>d.key===k);
+    return { key:k, label: (stored && stored.label) || def.label, sla: stored && stored.sla!=null ? stored.sla : def.sla };
+  });
+  STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
+}
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', setup:'Connect to Firebase' };
+
+// ---- Lead field configuration (drives the New Lead form + list filters) ----
+// Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
+const DEFAULT_FIELD_CONFIG = [
+  { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:true,  filter:false },
+  { field:'leadSource',         label:'Lead Source',            visible:true, mandatory:true,  filter:true  },
+  { field:'channelPartnerCode', label:'Channel Partner',        visible:true, mandatory:false, filter:true  },
+  { field:'assignedExecutive',  label:'Assigned Executive',     visible:true, mandatory:false, filter:true  },
+  { field:'village',            label:'Village Name',           visible:true, mandatory:true,  filter:false },
+  { field:'surveyNumber',       label:'Survey Number(s)',       visible:true, mandatory:false, filter:false },
+  { field:'siteLocation',       label:'Site Location',          visible:true, mandatory:false, filter:false },
+  { field:'googlePin',          label:'Google Pin / Coordinates', visible:true, mandatory:false, filter:false },
+  { field:'landClassification', label:'Land Classification',    visible:true, mandatory:false, filter:false },
+  { field:'extent',             label:'Total Land Extent',      visible:true, mandatory:true,  filter:false },
+  { field:'price',              label:'Quoted Price',           visible:true, mandatory:true,  filter:false },
+  { field:'landownerName',      label:'Landowner Name',         visible:true, mandatory:false, filter:false },
+  { field:'landownerPhone',     label:'Landowner Phone',        visible:true, mandatory:false, filter:false },
+  { field:'mediatorName',       label:'Mediator / Broker Name', visible:true, mandatory:false, filter:false },
+  { field:'nextCallDate',       label:'Next Call Date',         visible:true, mandatory:false, filter:false },
+];
+// Maps each configurable field to the New Lead form input(s) it controls.
+const FIELD_TO_INPUT = {
+  leadSourceDateTime:['nl-datetime'], leadSource:['nl-source'], channelPartnerCode:['nl-cp'],
+  assignedExecutive:['nl-exec'], village:['nl-village'], surveyNumber:['nl-survey'],
+  siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
+  extent:['nl-extent-val'], price:['nl-price-val'],
+  landownerName:['nl-owner-name'], landownerPhone:['nl-owner-phone'],
+  mediatorName:['nl-med-name'], nextCallDate:['nl-nextcall'],
+};
+
+// ---- Master data definitions --------------------------------------------
+// Every one of these is a real, admin-editable master (see the Masters tab),
+// backed by its own Firestore collection when live. Dropdowns throughout the
+// app read from these — nothing business-specific is hardcoded anymore.
+const MASTER_DEFS = [
+  { key:'leadSources',     label:'Lead Sources',          collection:'m_lead_sources',     fields:['label'] },
+  { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'] },
+  { key:'villages',        label:'Villages / Locations',  collection:'m_villages',         fields:['name','taluk','district'] },
+  { key:'executives',      label:'Executives / Users',    collection:'m_executives',       fields:['name','phone','role'] },
+  { key:'landClasses',     label:'Land Classifications',  collection:'m_land_classes',     fields:['label'] },
+  { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
+  { key:'holdReasons',     label:'On-Hold Reasons',       collection:'m_hold_reasons',     fields:['label'] },
+];
+const FIELD_LABELS = { label:'Label', code:'Code', name:'Name', phone:'Phone', commissionPct:'Commission %', taluk:'Taluk', district:'District', role:'Role' };
+
+function seedMaster(key){
+  const data = {
+    leadSources: ['Website Enquiry','Channel Partner','Direct / Walk-in','Referral','Field Survey','Cold Call','Other'].map(label=>({label})),
+    channelPartners: [
+      {code:'CP-007', name:'Anand Associates', phone:'9840012345', commissionPct:1.5},
+      {code:'CP-014', name:'Elite Land Brokers', phone:'9884098840', commissionPct:2},
+    ],
+    villages: ['Oragadam','Guduvancheri','Thiruporur','Sriperumbudur','Mahabalipuram','Chengalpattu','Padappai','Vandalur'].map(name=>({name, taluk:'', district:'Chennai / Kancheepuram'})),
+    executives: [
+      {name:'Karthik R', phone:'', role:'Land Executive'},
+      {name:'Divya S', phone:'', role:'Land Executive'},
+    ],
+    landClasses: ['Agricultural','DTCP Approved Layout','Patta Land','Government Land','Disputed / Litigation','Other'].map(label=>({label})),
+    dropReasons: ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'].map(label=>({label})),
+    holdReasons: ['Awaiting owner decision','Budget deferred','Litigation pending','Awaiting documents','Other'].map(label=>({label})),
+  };
+  return data[key] || [];
+}
 
 const fmtINR = n => n==null||isNaN(n) ? '—' : '₹' + Math.round(n).toLocaleString('en-IN');
 const fmtNum = n => n==null||isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', {maximumFractionDigits:1});
@@ -182,15 +321,16 @@ const daysBetween = (a,b) => Math.floor((b-a)/86400000);
 const todayStr = () => new Date().toISOString().slice(0,10);
 const uid = p => p + '-' + Math.random().toString(36).slice(2,7).toUpperCase();
 
-function extentSqft(v,u){ return (v||0) * (EXTENT_UNITS[u]?.sqft || 1); }
-function pricePerSqft(v,u){ return (v||0) / (EXTENT_UNITS[u]?.sqft || 1); }
+function extentSqft(v,u){ return (Number(v)||0) * (EXTENT_UNITS[u]?.sqft || 1); }
+function pricePerSqft(v,u){ return (Number(v)||0) / (EXTENT_UNITS[u]?.sqft || 1); }
 
-// ---- Sample seed data (demo mode only) -------------------------------
+// ---- Sample seed leads (used to seed Firestore on first connect, and to
+//      populate the in-memory demo) ---------------------------------------
 function seedLeads(){
   const now = Date.now();
   const daysAgo = n => new Date(now - n*86400000).toISOString();
   const mk = (o) => Object.assign({
-    id: uid('LL-2026'),
+    leadId: uid('LL-2026'),
     createdAt: daysAgo(o.age||0),
     leadSourceDateTime: daysAgo(o.age||0),
     surveyNumber:'', googlePin:'', landClassification:'Agricultural',
@@ -206,7 +346,7 @@ function seedLeads(){
   }, o);
 
   return [
-    mk({stage:'new', age:1, stageAge:1, village:'Oragadam', siteLocation:'Near NH48 service road', extentValue:2.5, extentUnit:'acre', priceValue:1.1, priceUnit:'acre', priceUnitLabel:'per Acre', leadSource:'Website Enquiry', assignedExecutive:'Karthik R'}),
+    mk({stage:'new', age:1, stageAge:1, village:'Oragadam', siteLocation:'Near NH48 service road', extentValue:2.5, extentUnit:'acre', priceValue:1.1, priceUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Karthik R'}),
     mk({stage:'contacted', age:9, stageAge:8, village:'Guduvancheri', siteLocation:'Behind bus depot', extentValue:60, extentUnit:'cent', priceValue:38, priceUnit:'cent', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Divya S', nextCallDate: todayStr(),
       contactSubStatus:{ mediator:{contacted:true,date:daysAgo(6)}, landowner:{contacted:false,date:''} }}),
     mk({stage:'site_visited', age:14, stageAge:4, village:'Thiruporur', siteLocation:'Off ECR link road', extentValue:1.8, extentUnit:'acre', priceValue:95, priceUnit:'ground', leadSource:'Field Survey', assignedExecutive:'Karthik R', landClassification:'DTCP Approved Layout'}),
@@ -226,30 +366,272 @@ function seedLeads(){
   ];
 }
 
-// ---- In-memory data layer (Phase 1 demo) -----------------------------
-const DB = {
-  _leads: seedLeads(),
-  getLeads(){ return this._leads; },
-  addLead(lead){ this._leads.unshift(lead); },
-  updateLead(id, patch){
-    const i = this._leads.findIndex(l=>l.id===id);
-    if(i>-1) this._leads[i] = Object.assign({}, this._leads[i], patch);
-  },
-  getLead(id){ return this._leads.find(l=>l.id===id); },
-};
+// =========================================================================
+// DATA LAYER — two implementations behind the same interface:
+//   getLeads(), getLead(id), addLead(lead), updateLead(id,patch)
+//   getMasters(key) [active only], getAllMasters(key), addMaster(key,fields),
+//   updateMaster(key,id,patch), toggleMaster(key,id)
+//   isLive(), hasStorage(), storageRef(path) [Firestore version only]
+// =========================================================================
+
+class MemoryDB {
+  constructor(){
+    this.leads = seedLeads().map(l => Object.assign({ id: l.leadId }, l));
+    this.masters = {};
+    MASTER_DEFS.forEach(m => {
+      this.masters[m.key] = seedMaster(m.key).map((f,i) => Object.assign({ id: 'seed-'+m.key+'-'+i, active:true }, f));
+    });
+    this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
+    this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
+  }
+  async init(){ /* nothing to load — already seeded in memory */ }
+  ready(){ return Promise.resolve(); }
+  isLive(){ return false; }
+  getLeads(){ return this.leads; }
+  getLead(id){ return this.leads.find(l=>l.id===id); }
+  async addLead(lead){ const withId = Object.assign({}, lead, { id: lead.leadId }); this.leads.unshift(withId); }
+  async updateLead(id, patch){ const i=this.leads.findIndex(l=>l.id===id); if(i>-1) this.leads[i]=Object.assign({}, this.leads[i], patch, {updatedAt:new Date().toISOString()}); }
+  getMasters(key){ return (this.masters[key]||[]).filter(m=>m.active!==false); }
+  getAllMasters(key){ return this.masters[key]||[]; }
+  async addMaster(key, fields){ this.masters[key].push(Object.assign({ id: uid('M'), active:true }, fields)); }
+  async updateMaster(key, id, patch){ const arr=this.masters[key]; const i=arr.findIndex(m=>m.id===id); if(i>-1) arr[i]=Object.assign({}, arr[i], patch); }
+  async toggleMaster(key, id){ const arr=this.masters[key]; const cur=arr.find(m=>m.id===id); if(cur) await this.updateMaster(key,id,{active: !(cur.active!==false)}); }
+  async deleteMaster(key, id){ this.masters[key] = (this.masters[key]||[]).filter(m=>m.id!==id); }
+  getFieldConfig(){ return this.fieldConfig; }
+  async saveFieldConfig(rows){ this.fieldConfig = rows.map(r=>Object.assign({}, r)); }
+  getStages(){ return this.stages; }
+  async saveStages(rows){ this.stages = rows.map(r=>Object.assign({}, r)); }
+}
+
+class FirestoreDB {
+  constructor(fsdb, storage){
+    this.fsdb = fsdb;
+    this.storage = storage;
+    this.leads = [];
+    this.masters = {};
+    MASTER_DEFS.forEach(m => this.masters[m.key] = []);
+    this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
+    this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
+    this._onChange = null;
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._readyResolvers = [];
+  }
+  onChange(cb){ this._onChange = cb; }
+  _markReady(tag){
+    this._pending.delete(tag);
+    if(this._pending.size===0){ this._readyResolvers.forEach(r=>r()); this._readyResolvers = []; }
+  }
+  ready(){ return this._pending.size===0 ? Promise.resolve() : new Promise(res=>this._readyResolvers.push(res)); }
+  isLive(){ return true; }
+  hasStorage(){ return !!this.storage; }
+  storageRef(path){ return this.storage.ref(path); }
+
+  async init(){
+    // One-time seed of each master collection if it's empty, so a freshly
+    // connected project isn't blank.
+    for(const m of MASTER_DEFS){
+      const snap = await this.fsdb.collection(m.collection).limit(1).get();
+      if(snap.empty){
+        const seed = seedMaster(m.key);
+        const batch = this.fsdb.batch();
+        seed.forEach(f=>{
+          const ref = this.fsdb.collection(m.collection).doc();
+          batch.set(ref, Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, f));
+        });
+        await batch.commit();
+      }
+    }
+    // One-time seed of sample leads if the leads collection is empty.
+    const leadSnap = await this.fsdb.collection('leads').limit(1).get();
+    if(leadSnap.empty){
+      const seed = seedLeads();
+      const batch = this.fsdb.batch();
+      seed.forEach(lead=>{
+        const ref = this.fsdb.collection('leads').doc();
+        batch.set(ref, Object.assign({}, lead, { createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+      });
+      await batch.commit();
+    }
+    // One-time seed of the lead field configuration doc if it doesn't exist yet.
+    const fcRef = this.fsdb.collection('settings').doc('leadFieldConfig');
+    const fcSnap = await fcRef.get();
+    if(!fcSnap.exists){ await fcRef.set({ rows: DEFAULT_FIELD_CONFIG }); }
+    fcRef.onSnapshot(snap=>{
+      this.fieldConfig = (snap.data() && snap.data().rows) || DEFAULT_FIELD_CONFIG;
+      this._markReady('fieldConfig');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('fieldConfig listener error', err); this._markReady('fieldConfig'); });
+
+    // One-time seed of the stages doc if it doesn't exist yet.
+    const stRef = this.fsdb.collection('settings').doc('stages');
+    const stSnap = await stRef.get();
+    if(!stSnap.exists){ await stRef.set({ rows: DEFAULT_STAGE_CONFIG }); }
+    stRef.onSnapshot(snap=>{
+      this.stages = (snap.data() && snap.data().rows) || DEFAULT_STAGE_CONFIG;
+      this._markReady('stages');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('stages listener error', err); this._markReady('stages'); });
+
+    // Live listeners keep local caches (and the UI) in sync with Firestore.
+    this.fsdb.collection('leads').orderBy('createdAt','desc').onSnapshot(snap=>{
+      this.leads = snap.docs.map(d=>Object.assign({ id:d.id }, d.data()));
+      this._markReady('leads');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('leads listener error', err); this._markReady('leads'); });
+
+    MASTER_DEFS.forEach(m=>{
+      this.fsdb.collection(m.collection).onSnapshot(snap=>{
+        this.masters[m.key] = snap.docs.map(d=>Object.assign({ id:d.id }, d.data()));
+        this._markReady('master:'+m.key);
+        if(this._onChange) this._onChange();
+      }, err=>{ console.error(m.key+' listener error', err); this._markReady('master:'+m.key); });
+    });
+  }
+  getLeads(){ return this.leads; }
+  getLead(id){ return this.leads.find(l=>l.id===id); }
+  async addLead(lead){
+    await this.fsdb.collection('leads').add(Object.assign({}, lead, {
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }));
+  }
+  async updateLead(id, patch){
+    await this.fsdb.collection('leads').doc(id).update(Object.assign({}, patch, {
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }));
+  }
+  getMasters(key){ return (this.masters[key]||[]).filter(m=>m.active!==false); }
+  getAllMasters(key){ return this.masters[key]||[]; }
+  async addMaster(key, fields){
+    const def = MASTER_DEFS.find(m=>m.key===key);
+    await this.fsdb.collection(def.collection).add(Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, fields));
+  }
+  async updateMaster(key, id, patch){
+    const def = MASTER_DEFS.find(m=>m.key===key);
+    await this.fsdb.collection(def.collection).doc(id).update(patch);
+  }
+  async toggleMaster(key, id){
+    const cur = this.masters[key].find(m=>m.id===id);
+    await this.updateMaster(key, id, { active: !(cur && cur.active!==false) });
+  }
+  async deleteMaster(key, id){
+    const def = MASTER_DEFS.find(m=>m.key===key);
+    await this.fsdb.collection(def.collection).doc(id).delete();
+  }
+  getFieldConfig(){ return this.fieldConfig; }
+  async saveFieldConfig(rows){ await this.fsdb.collection('settings').doc('leadFieldConfig').set({ rows }); }
+  getStages(){ return this.stages; }
+  async saveStages(rows){ await this.fsdb.collection('settings').doc('stages').set({ rows }); }
+}
+
+// ---- Boot: pick MemoryDB or FirestoreDB, then render --------------------
+let DB = null;
+let currentDetailLeadId = null;
+
+function showConnectionBadge(live, note){
+  const el = document.getElementById('conn-badge');
+  if(!el) return;
+  el.innerHTML = live
+    ? '<span class="badge badge-ok conn-dot">● Firebase Connected</span>'
+    : '<span class="badge badge-warn conn-dot" title="'+(note?String(note).replace(/"/g,'\''):'Add your Firebase config — see the Connect to Firebase tab.')+'">● Demo Mode</span>';
+}
+
+function renderDemoBanner(show, note){
+  const holder = document.getElementById('banner-holder');
+  if(!show){ holder.innerHTML=''; return; }
+  holder.innerHTML = `<div class="banner"><div><b>Running in demo mode</b> — data is in-memory and resets on refresh.${note?(' ('+note+')'):''} Open the "Connect to Firebase" page to make this persistent with your own project.</div><button id="banner-x">&times;</button></div>`;
+  const x = document.getElementById('banner-x');
+  if(x) x.onclick = () => { holder.innerHTML=''; };
+}
+
+async function boot(){
+  const cfg = FIREBASE_CONFIG;
+  const isPlaceholder = !cfg || !cfg.apiKey || cfg.apiKey.indexOf('REPLACE_ME') !== -1;
+  const sdkLoaded = typeof firebase !== 'undefined';
+
+  if(!isPlaceholder && sdkLoaded){
+    try{
+      firebase.initializeApp(cfg);
+      const fsdb = firebase.firestore();
+      const storage = (typeof firebase.storage === 'function') ? firebase.storage() : null;
+      DB = new FirestoreDB(fsdb, storage);
+      DB.onChange(()=>{
+        refreshStagesFromDB();
+        render();
+        if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
+      });
+      await DB.init();
+      await DB.ready();
+      showConnectionBadge(true);
+      renderDemoBanner(false);
+    }catch(err){
+      console.error('Firebase init failed — falling back to demo mode.', err);
+      DB = new MemoryDB();
+      await DB.init();
+      showConnectionBadge(false, err.message);
+      renderDemoBanner(true, 'connection error: ' + err.message);
+    }
+  } else {
+    DB = new MemoryDB();
+    await DB.init();
+    showConnectionBadge(false, isPlaceholder ? 'no Firebase config set yet' : 'SDK did not load');
+    renderDemoBanner(true, isPlaceholder ? 'no Firebase config set yet' : 'the Firebase SDK did not load');
+  }
+  document.getElementById('footer-note').textContent = DB.isLive()
+    ? 'Connected to Firebase — leads, masters, and documents are persisted live.'
+    : 'Demo mode — see the "Connect to Firebase" page to wire this to your own Firestore project.';
+  refreshStagesFromDB();
+  render();
+}
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-let listFilters = { stage:'', source:'', exec:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
+let listFilters = Object.assign({}, DEFAULT_FILTERS);
+let listPage = 1;
+const PAGE_SIZE = 15;
+let selectedLeadIds = new Set();
+let currentMasterKey = MASTER_DEFS[0].key;
+let editingMasterId = null;
+// Progress Details is one page with its own Status/Source/Channel
+// Partner/Executive/Date filter panel and a single results table.
+let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' };
 
 function render(){
-  document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.view===currentView));
+  document.querySelectorAll('#tabs > button[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===currentView));
+  document.getElementById('page-title').textContent = PAGE_TITLES[currentView] || '';
   const root = document.getElementById('view-root');
   if(currentView==='dashboard') root.innerHTML = renderDashboard();
-  else if(currentView==='board') root.innerHTML = renderBoard();
+  else if(currentView==='progress') root.innerHTML = renderProgress();
   else if(currentView==='list') root.innerHTML = renderList();
+  else if(currentView==='reports') root.innerHTML = renderReports();
+  else if(currentView==='configure') root.innerHTML = renderConfigure();
+  else if(currentView==='masters') root.innerHTML = renderMasters();
   else if(currentView==='setup') root.innerHTML = renderSetup();
   wireViewEvents();
+}
+
+// ---- Navigation helpers ---------------------------------------------------
+// Jump to the All Leads page with a fresh set of filters.
+function goToLeadsList(patch){
+  listFilters = Object.assign({}, DEFAULT_FILTERS, patch||{});
+  listPage = 1;
+  selectedLeadIds = new Set();
+  currentView = 'list';
+  render();
+}
+// Jump to the Progress Details page, optionally pre-filtered to one status
+// (e.g. from a dashboard funnel-row click).
+function goToProgress(stageKey){
+  progressFilters = Object.assign({ stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' }, stageKey ? { stage: stageKey } : {});
+  currentView = 'progress';
+  render();
+}
+// Lookup of the Configure page's per-field settings, by field key.
+function fieldConfigMap(){
+  const map = {};
+  (DB.getFieldConfig()||[]).forEach(r=>map[r.field]=r);
+  return map;
 }
 
 // ---- Derived calculations ----------------------------------------------
@@ -276,13 +658,30 @@ function callBadgeInfo(l){
   if(diff === 0) return {type:'warn', text:'Due today'};
   return {type:'muted', text:'In ' + diff + 'd'};
 }
+function leadMatchesFilters(l, f){
+  if(f.stage && l.stage !== f.stage) return false;
+  if(f.excludeClosed && l.stage === 'closed') return false;
+  if(f.source && l.leadSource !== f.source) return false;
+  if(f.channelPartner && l.channelPartnerCode !== f.channelPartner) return false;
+  if(f.exec && l.assignedExecutive !== f.exec) return false;
+  if(f.dateFrom){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d < f.dateFrom) return false; }
+  if(f.dateTo){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d > f.dateTo) return false; }
+  if(f.onHold && !(l.onHold && l.onHold.active)) return false;
+  if(f.callDueOrOverdue && !(l.nextCallDate && new Date(l.nextCallDate) <= new Date(todayStr()))) return false;
+  if(f.letter){ const v=(l.village||'').trim().toUpperCase(); if(!v.startsWith(f.letter)) return false; }
+  if(f.q){
+    const q = f.q.toLowerCase();
+    const hay = [l.leadId,l.village,l.siteLocation,l.landownerName,l.surveyNumber].join(' ').toLowerCase();
+    if(!hay.includes(q)) return false;
+  }
+  return true;
+}
 
 // ---- DASHBOARD -----------------------------------------------------------
 function renderDashboard(){
   const leads = DB.getLeads();
   const active = leads.filter(isActive);
   const totalExtentAcre = active.reduce((s,l)=>s+leadExtentSqft(l),0) / 43560;
-  const totalValueApprox = active.reduce((s,l)=>s+leadValue(l),0); // priceValue is often in lakh in seed notes; treated as unit currency here
   const overdueCalls = leads.filter(l=>isActive(l) && l.nextCallDate && new Date(l.nextCallDate) < new Date(todayStr()));
   const dueToday = leads.filter(l=>isActive(l) && l.nextCallDate === todayStr());
   const ageingAlerts = active.filter(isOverdueStage);
@@ -292,40 +691,44 @@ function renderDashboard(){
     const count = leads.filter(l=>l.stage===s.key).length;
     const max = Math.max(1, ...STAGES.map(st=>leads.filter(l=>l.stage===st.key).length));
     const pct = Math.round((count/max)*100);
-    return `<div class="funnel-row"><div class="flabel">${s.label}</div><div class="fbar-wrap"><div class="fbar" style="width:${pct}%"></div></div><div class="fcount">${count}</div></div>`;
+    return `<div class="funnel-row" data-stage="${s.key}"><div class="flabel">${s.label}</div><div class="fbar-wrap"><div class="fbar" style="width:${pct}%"></div></div><div class="fcount">${count}</div></div>`;
   }).join('');
 
   const bySource = {};
-  leads.forEach(l=>{ bySource[l.leadSource]=(bySource[l.leadSource]||0)+1; });
+  leads.forEach(l=>{ bySource[l.leadSource||'—']=(bySource[l.leadSource||'—']||0)+1; });
   const sourceRows = Object.entries(bySource).sort((a,b)=>b[1]-a[1]).map(([src,c])=>
-    `<tr><td>${src}</td><td>${c}</td><td>${Math.round(c/leads.length*100)}%</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No leads yet</td></tr>';
+    `<tr class="clickable-row" data-source="${src}"><td>${src}</td><td>${c}</td><td>${leads.length?Math.round(c/leads.length*100):0}%</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No leads yet</td></tr>';
 
   const byCP = {};
   leads.filter(l=>l.channelPartnerCode).forEach(l=>{ byCP[l.channelPartnerCode]=(byCP[l.channelPartnerCode]||0)+1; });
   const cpRows = Object.entries(byCP).sort((a,b)=>b[1]-a[1]).map(([cp,c])=>
-    `<tr><td>${cp}</td><td>${c}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No channel partner leads yet</td></tr>';
+    `<tr class="clickable-row" data-cp="${cp}"><td>${cp}</td><td>${c}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No channel partner leads yet</td></tr>';
 
   const callList = leads.filter(l=>isActive(l) && l.nextCallDate).sort((a,b)=>new Date(a.nextCallDate)-new Date(b.nextCallDate)).slice(0,8).map(l=>{
     const info = callBadgeInfo(l);
-    return `<div class="callitem"><span><b>${l.id}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
       <span class="badge badge-${info.type==='danger'?'danger':info.type==='warn'?'warn':'muted'}">${info.text} · ${fmtDate(l.nextCallDate)}</span></div>`;
   }).join('') || '<div class="empty">No upcoming calls scheduled</div>';
 
   const ageingList = ageingAlerts.slice(0,8).map(l=>{
     const st = STAGES.find(s=>s.key===l.stage);
-    return `<div class="callitem"><span><b>${l.id}</b> — ${l.village} <span style="color:var(--muted)">(${st.label})</span></span>
+    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${st.label})</span></span>
       <span class="badge badge-danger">${daysInStage(l)}d in stage (SLA ${st.sla}d)</span></div>`;
   }).join('') || '<div class="empty">No leads currently past their stage SLA</div>';
 
   return `
-    <div class="grid cards4">
-      <div class="card stat"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total incl. closed</div></div>
-      <div class="card stat"><div class="label">Active Extent</div><div class="value">${fmtNum(totalExtentAcre)}</div><div class="sub">acres (approx., normalized)</div></div>
-      <div class="card stat"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">flagged across all stages</div></div>
-      <div class="card stat"><div class="label">Calls Due / Overdue</div><div class="value" style="color:${overdueCalls.length?'var(--danger)':'var(--navy)'}">${dueToday.length} / ${overdueCalls.length}</div><div class="sub">today / overdue</div></div>
+    <div class="page-header">
+      <h1>Dashboard</h1>
     </div>
 
-    <h2 class="section-title">Pipeline Funnel <span class="tag">All leads</span></h2>
+    <div class="grid cards4">
+      <div class="card stat" data-drill="active"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total incl. closed — click to view</div></div>
+      <div class="card stat" data-drill="active"><div class="label">Active Extent</div><div class="value">${fmtNum(totalExtentAcre)}</div><div class="sub">acres (approx., normalized) — click to view</div></div>
+      <div class="card stat" data-drill="onHold"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">flagged across all stages — click to view</div></div>
+      <div class="card stat" data-drill="calls"><div class="label">Calls Due / Overdue</div><div class="value" style="color:${overdueCalls.length?'var(--danger)':'var(--navy)'}">${dueToday.length} / ${overdueCalls.length}</div><div class="sub">today / overdue — click to view</div></div>
+    </div>
+
+    <h2 class="section-title">Pipeline Funnel <span class="tag">click a stage to view its leads</span></h2>
     <div class="card">${funnelRows}</div>
 
     <div class="two-col">
@@ -341,139 +744,591 @@ function renderDashboard(){
 
     <div class="two-col">
       <div>
-        <h2 class="section-title">By Lead Source</h2>
+        <h2 class="section-title">By Lead Source <span class="tag">click a row</span></h2>
         <div class="card"><table><tr><th>Source</th><th>Count</th><th>%</th></tr>${sourceRows}</table></div>
       </div>
       <div>
-        <h2 class="section-title">By Channel Partner</h2>
+        <h2 class="section-title">By Channel Partner <span class="tag">click a row</span></h2>
         <div class="card"><table><tr><th>Code</th><th>Count</th></tr>${cpRows}</table></div>
       </div>
     </div>
   `;
 }
 
-// ---- PIPELINE BOARD --------------------------------------------------
-function leadCardHtml(l){
-  const overdue = isOverdueStage(l);
-  const call = callBadgeInfo(l);
-  const badges = [];
-  if(l.onHold && l.onHold.active) badges.push('<span class="badge badge-warn">On Hold</span>');
-  if(overdue) badges.push(`<span class="badge badge-danger">${daysInStage(l)}d in stage</span>`);
-  if(l.stage==='closed') badges.push(l.outcome==='acquired' ? '<span class="badge badge-ok">Acquired</span>' : '<span class="badge badge-danger">Dropped</span>');
-  if(call && l.stage!=='closed') badges.push(`<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>`);
-  return `<div class="lead-card" data-id="${l.id}">
-    <div class="lid">${l.id}</div>
-    <div class="vil">${l.village || '—'}</div>
-    <div class="meta">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label} · ${l.assignedExecutive||'Unassigned'}</div>
-    <div class="badges">${badges.join('')}</div>
-  </div>`;
+// ---- Export helpers -------------------------------------------------------
+function downloadBlob(content, filename, type){
+  const blob = new Blob([content], {type});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
-
-function renderBoard(){
-  const leads = DB.getLeads();
-  const cols = STAGES.map(s=>{
-    const items = leads.filter(l=>l.stage===s.key);
-    return `<div class="col">
-      <div class="col-head"><span>${s.label}</span><span class="count">${items.length}</span></div>
-      ${items.map(leadCardHtml).join('') || '<div class="empty">No leads</div>'}
-    </div>`;
-  }).join('');
-  return `<div class="board">${cols}</div>`;
+function toCSV(rows){
+  if(!rows.length) return '';
+  const headers = Object.keys(rows[0]);
+  const esc = v => { const s = v==null?'':String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  return [headers.join(',')].concat(rows.map(r=>headers.map(h=>esc(r[h])).join(','))).join('\n');
 }
-
-// ---- ALL LEADS LIST ----------------------------------------------------
-function renderList(){
-  const leads = DB.getLeads().filter(l=>{
-    if(listFilters.stage && l.stage!==listFilters.stage) return false;
-    if(listFilters.source && l.leadSource!==listFilters.source) return false;
-    if(listFilters.exec && l.assignedExecutive!==listFilters.exec) return false;
-    if(listFilters.q){
-      const q = listFilters.q.toLowerCase();
-      const hay = [l.id,l.village,l.siteLocation,l.landownerName,l.surveyNumber].join(' ').toLowerCase();
-      if(!hay.includes(q)) return false;
-    }
-    return true;
+// ---- Generic row exporters (used by the Reports page) --------------------
+function exportRowsExcel(rows, filename, sheetName){
+  if(!rows.length){ alert('Nothing to export.'); return; }
+  if(typeof XLSX !== 'undefined'){
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sheetName||'Sheet1');
+    XLSX.writeFile(wb, filename);
+  } else {
+    downloadBlob(toCSV(rows), filename.replace(/\.xlsx$/,'.csv'), 'text/csv;charset=utf-8;');
+    alert('The Excel library did not load (likely offline) — downloaded a CSV instead, which opens fine in Excel.');
+  }
+}
+function exportRowsPDF(rows, filename, title){
+  if(!rows.length){ alert('Nothing to export.'); return; }
+  const columns = Object.keys(rows[0]);
+  if(typeof window.jspdf !== 'undefined'){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    doc.setFontSize(14); doc.text(title, 14, 16);
+    doc.setFontSize(9); doc.setTextColor(120); doc.text(new Date().toLocaleString('en-IN'), 14, 22); doc.setTextColor(0);
+    doc.autoTable({ startY:28, head:[columns], body: rows.map(r=>columns.map(c=>r[c])), styles:{fontSize:8}, headStyles:{fillColor:[27,42,74]} });
+    doc.save(filename);
+  } else {
+    alert("The PDF library did not load (likely offline) — using your browser's Print dialog instead. Choose \"Save as PDF\" as the destination.");
+    window.print();
+  }
+}
+function leadsReportRows(){
+  return DB.getLeads().map(l=>({
+    'Lead ID': l.leadId, Village: l.village||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
+    'Channel Partner': l.channelPartnerCode||'', Executive: l.assignedExecutive||'',
+    'Lead Date': (l.leadSourceDateTime||'').slice(0,10), 'On Hold': (l.onHold&&l.onHold.active)?'Yes':'No', Outcome: l.outcome||''
+  }));
+}
+function siteVisitReportRows(){
+  const rows = [];
+  DB.getLeads().forEach(l=>{
+    (l.stageHistory||[]).forEach(h=>{
+      if(h.stage==='site_visited') rows.push({
+        'Lead ID': l.leadId, Village: l.village||'', 'Visited On': (h.at||'').slice(0,10),
+        'Logged By': h.by||'', Executive: l.assignedExecutive||'', Source: l.leadSource||''
+      });
+    });
   });
-  const execs = [...new Set(DB.getLeads().map(l=>l.assignedExecutive).filter(Boolean))];
-  const rows = leads.map(l=>{
-    const call = callBadgeInfo(l);
-    return `<tr class="clickable" data-id="${l.id}">
-      <td><b>${l.id}</b></td>
-      <td>${l.village||'—'}</td>
-      <td><span class="badge badge-navy">${stageLabel(l.stage)}</span>${l.onHold&&l.onHold.active?' <span class="badge badge-warn">Hold</span>':''}</td>
-      <td>${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
-      <td>${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
-      <td>${l.leadSource}</td>
-      <td>${l.assignedExecutive||'—'}</td>
-      <td>${call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—'}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">No leads match these filters</td></tr>';
+  rows.sort((a,b)=> (b['Visited On']||'').localeCompare(a['Visited On']||''));
+  return rows;
+}
+
+// ---- REPORTS ---------------------------------------------------------------
+function renderReports(){
+  const leads = DB.getLeads();
+  const visits = siteVisitReportRows();
+
+  const leadsRows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
+      <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
+      <td>${l.leadSource||'—'}</td><td>${l.assignedExecutive||'—'}</td><td>${fmtDate(l.leadSourceDateTime)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="empty">No leads yet</td></tr>';
+
+  const visitRows = visits.map(v=>`<tr>
+      <td><b>${v['Lead ID']}</b></td><td>${v.Village}</td><td>${fmtDate(v['Visited On'])}</td><td>${v['Logged By']||'—'}</td><td>${v.Executive||'—'}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="empty">No site visits recorded yet — a visit is logged automatically when a lead moves to the Site Visited stage.</td></tr>';
 
   return `
-    <div class="toolbar">
-      <input type="text" id="f-q" placeholder="Search village, owner, survey no…" value="${listFilters.q}">
-      <select id="f-stage"><option value="">All stages</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}</select>
-      <select id="f-source"><option value="">All sources</option>${LEAD_SOURCES.map(s=>`<option ${listFilters.source===s?'selected':''}>${s}</option>`).join('')}</select>
-      <select id="f-exec"><option value="">All executives</option>${execs.map(e=>`<option ${listFilters.exec===e?'selected':''}>${e}</option>`).join('')}</select>
+    <div class="page-header"><h1>Reports</h1></div>
+
+    <h2 class="section-title">Leads Report <span class="tag">${leads.length} leads</span></h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="rep-leads-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="rep-leads-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Source</th><th>Executive</th><th>Lead Date</th></tr>${leadsRows}</table></div>
+    </div>
+
+    <h2 class="section-title">Site Visit Report <span class="tag">${visits.length} visit${visits.length===1?'':'s'} recorded</span></h2>
+    <div class="card">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="rep-visits-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="rep-visits-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Visited On</th><th>Logged By</th><th>Executive</th></tr>${visitRows}</table></div>
+    </div>
+  `;
+}
+function wireReportsEvents(){
+  document.querySelectorAll('#view-root tr.clickable-row[data-id]').forEach(tr=>tr.addEventListener('click', ()=>openLeadDetail(tr.dataset.id)));
+  const le = document.getElementById('rep-leads-excel'); if(le) le.onclick = () => exportRowsExcel(leadsReportRows(), 'Land_Leads_Report.xlsx', 'Leads');
+  const lp = document.getElementById('rep-leads-pdf');   if(lp) lp.onclick = () => exportRowsPDF(leadsReportRows(), 'Land_Leads_Report.pdf', 'Leads Report');
+  const ve = document.getElementById('rep-visits-excel'); if(ve) ve.onclick = () => exportRowsExcel(siteVisitReportRows(), 'Site_Visit_Report.xlsx', 'Site Visits');
+  const vp = document.getElementById('rep-visits-pdf');   if(vp) vp.onclick = () => exportRowsPDF(siteVisitReportRows(), 'Site_Visit_Report.pdf', 'Site Visit Report');
+}
+
+// ---- PROGRESS DETAILS (one page, one filtered table — like IN4Suite's
+//      Land Approval screen: a Status filter plus a single results table) ---
+function renderProgress(){
+  const sources = DB.getMasters('leadSources');
+  const cps = DB.getMasters('channelPartners');
+  const execs = DB.getMasters('executives');
+  const activeFilters = Object.assign({}, DEFAULT_FILTERS, progressFilters);
+  const leads = DB.getLeads().filter(l=>leadMatchesFilters(l, activeFilters));
+
+  const rows = leads.map(l=>{
+    const call = callBadgeInfo(l);
+    const followUp = (l.onHold && l.onHold.active)
+      ? '<span class="badge badge-warn">On Hold</span>'
+      : (call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—');
+    return `<tr>
+      <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
+      <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
+      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
+      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${followUp}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8" class="empty">No leads match these filters</td></tr>`;
+
+  return `
+    <div class="page-header"><h1>Progress Details</h1></div>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Status</label><select id="pf-stage">
+          <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${progressFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select></div>
+        <div><label>Lead Source</label><select id="pf-source"><option value="">All sources</option>${sources.map(s=>`<option value="${s.label}" ${progressFilters.source===s.label?'selected':''}>${s.label}</option>`).join('')}</select></div>
+        <div><label>Channel Partner</label><select id="pf-cp"><option value="">All partners</option>${cps.map(c=>`<option value="${c.code}" ${progressFilters.channelPartner===c.code?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div><label>Assigned Executive</label><select id="pf-exec"><option value="">All executives</option>${execs.map(e=>`<option value="${e.name}" ${progressFilters.exec===e.name?'selected':''}>${e.name}</option>`).join('')}</select></div>
+        <div><label>Lead Date From</label><input type="date" id="pf-datefrom" value="${progressFilters.dateFrom}"></div>
+        <div><label>Lead Date To</label><input type="date" id="pf-dateto" value="${progressFilters.dateTo}"></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-sm btn-ghost" id="pf-clear">Clear Filters</button>
+        <button class="btn btn-sm btn-teal" id="pf-go">Go</button>
+      </div>
     </div>
     <div class="card" style="padding:0;overflow-x:auto;">
       <table>
-        <tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Extent</th><th>Quoted Price</th><th>Source</th><th>Executive</th><th>Next Call</th></tr>
+        <tr><th>Lead ID</th><th>Village</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Source</th><th>Executive</th><th>Follow-up</th></tr>
         ${rows}
       </table>
     </div>
   `;
 }
+function wireProgressEvents(){
+  document.querySelectorAll('#view-root td.clickable-row').forEach(td=>td.addEventListener('click', ()=>openLeadDetail(td.dataset.id)));
+  const val = id => (document.getElementById(id)?.value || '').trim();
+  const goBtn = document.getElementById('pf-go');
+  if(goBtn) goBtn.onclick = () => {
+    progressFilters = { stage: val('pf-stage'), source: val('pf-source'), channelPartner: val('pf-cp'), exec: val('pf-exec'), dateFrom: val('pf-datefrom'), dateTo: val('pf-dateto') };
+    render();
+  };
+  const clearBtn = document.getElementById('pf-clear');
+  if(clearBtn) clearBtn.onclick = () => { progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' }; render(); };
+}
+
+// ---- ALL LEADS LIST (dense ERP-style table page) --------------------------
+function renderList(){
+  const sources = DB.getMasters('leadSources');
+  const cps = DB.getMasters('channelPartners');
+  const execs = DB.getMasters('executives');
+  const fcfg = fieldConfigMap();
+  const allLeads = DB.getLeads();
+  const filtered = allLeads.filter(l=>leadMatchesFilters(l, listFilters));
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total/PAGE_SIZE));
+  if(listPage > totalPages) listPage = totalPages;
+  const startIdx = (listPage-1)*PAGE_SIZE;
+  const pageItems = filtered.slice(startIdx, startIdx+PAGE_SIZE);
+  const letters = ['ALL', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
+
+  const rows = pageItems.map(l=>{
+    const call = callBadgeInfo(l);
+    const checked = selectedLeadIds.has(l.id) ? 'checked' : '';
+    return `<tr>
+      <td><input type="checkbox" class="row-check" data-id="${l.id}" ${checked}></td>
+      <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
+      <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span>${l.onHold&&l.onHold.active?' <span class="badge badge-warn">Hold</span>':''}</td>
+      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
+      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—'}</td>
+      <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty">No leads match these filters</td></tr>`;
+
+  return `
+    <div class="page-header">
+      <h1>All Leads</h1>
+      <button class="btn btn-gold" id="btn-new-lead">+ Create New Lead</button>
+    </div>
+
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Status</label><select id="lf-stage">
+          <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select></div>
+        ${(!fcfg.leadSource || fcfg.leadSource.filter!==false) ? `<div><label>Lead Source</label><select id="lf-source">
+          <option value="">All sources</option>${sources.map(s=>`<option value="${s.label}" ${listFilters.source===s.label?'selected':''}>${s.label}</option>`).join('')}
+        </select></div>` : ''}
+        ${(!fcfg.channelPartnerCode || fcfg.channelPartnerCode.filter!==false) ? `<div><label>Channel Partner</label><select id="lf-cp">
+          <option value="">All partners</option>${cps.map(c=>`<option value="${c.code}" ${listFilters.channelPartner===c.code?'selected':''}>${c.code} — ${c.name}</option>`).join('')}
+        </select></div>` : ''}
+        ${(!fcfg.assignedExecutive || fcfg.assignedExecutive.filter!==false) ? `<div><label>Assigned Executive</label><select id="lf-exec">
+          <option value="">All executives</option>${execs.map(e=>`<option value="${e.name}" ${listFilters.exec===e.name?'selected':''}>${e.name}</option>`).join('')}
+        </select></div>` : ''}
+        <div><label>Lead Date From</label><input type="date" id="lf-datefrom" value="${listFilters.dateFrom}"></div>
+        <div><label>Lead Date To</label><input type="date" id="lf-dateto" value="${listFilters.dateTo}"></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-sm btn-ghost" id="lf-clear">Clear Filters</button>
+        <button class="btn btn-sm btn-teal" id="lf-go">Search</button>
+      </div>
+    </div>
+
+    <div class="toolbar" style="justify-content:space-between;">
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <input type="text" id="f-q" placeholder="Search village, owner, survey no…" value="${listFilters.q}">
+        <div class="index-nav">${letters.map(L=>{
+          const isAll = L==='ALL';
+          const active = isAll ? !listFilters.letter : listFilters.letter===L;
+          return `<button class="idx-btn ${active?'active':''}" data-letter="${isAll?'':L}">${L}</button>`;
+        }).join('')}</div>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="btn-export-list">⬇ Export (CSV)</button>
+    </div>
+
+    <div class="card" style="padding:0;overflow-x:auto;">
+      <table class="leads-table">
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Stage</th><th>Extent</th><th>Quoted Price</th><th>Source</th><th>Executive</th><th>Next Call</th><th></th></tr>
+        ${rows}
+      </table>
+    </div>
+
+    <div class="pagination">
+      <span>Displaying ${total?startIdx+1:0}–${Math.min(startIdx+PAGE_SIZE,total)} of ${total} record${total===1?'':'s'}</span>
+      <div class="page-btns">
+        <button class="btn btn-sm btn-ghost" id="pg-first" ${listPage<=1?'disabled':''}>«</button>
+        <button class="btn btn-sm btn-ghost" id="pg-prev" ${listPage<=1?'disabled':''}>‹</button>
+        <span class="page-num">${listPage} / ${totalPages}</span>
+        <button class="btn btn-sm btn-ghost" id="pg-next" ${listPage>=totalPages?'disabled':''}>›</button>
+        <button class="btn btn-sm btn-ghost" id="pg-last" ${listPage>=totalPages?'disabled':''}>»</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireListEvents(){
+  const val = id => (document.getElementById(id)?.value || '').trim();
+  const goBtn = document.getElementById('lf-go');
+  if(goBtn) goBtn.onclick = () => {
+    listFilters.stage = val('lf-stage');
+    // Source/Channel Partner/Executive filters can be hidden via the Configure
+    // page's Filter flag — only read them when actually rendered.
+    if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
+    if(document.getElementById('lf-cp')) listFilters.channelPartner = val('lf-cp');
+    if(document.getElementById('lf-exec')) listFilters.exec = val('lf-exec');
+    listFilters.dateFrom = val('lf-datefrom');
+    listFilters.dateTo = val('lf-dateto');
+    listPage = 1;
+    render();
+  };
+  const clearBtn = document.getElementById('lf-clear');
+  if(clearBtn) clearBtn.onclick = () => { listFilters = Object.assign({}, DEFAULT_FILTERS); listPage = 1; render(); };
+
+  const q = document.getElementById('f-q');
+  if(q) q.addEventListener('input', () => { listFilters.q = q.value; listPage = 1; render(); });
+
+  document.querySelectorAll('[data-letter]').forEach(b=>b.onclick = () => { listFilters.letter = b.dataset.letter; listPage = 1; render(); });
+
+  document.querySelectorAll('.row-check').forEach(c=>c.addEventListener('change', () => {
+    if(c.checked) selectedLeadIds.add(c.dataset.id); else selectedLeadIds.delete(c.dataset.id);
+  }));
+  const checkAll = document.getElementById('check-all');
+  if(checkAll) checkAll.addEventListener('change', () => {
+    document.querySelectorAll('.row-check').forEach(c=>{
+      c.checked = checkAll.checked;
+      if(checkAll.checked) selectedLeadIds.add(c.dataset.id); else selectedLeadIds.delete(c.dataset.id);
+    });
+  });
+
+  document.querySelectorAll('[data-view-id]').forEach(b=>b.onclick = (e) => { e.stopPropagation(); openLeadDetail(b.dataset.viewId); });
+  document.querySelectorAll('td.clickable-row').forEach(td=>td.addEventListener('click', () => openLeadDetail(td.dataset.id)));
+
+  const pgFirst = document.getElementById('pg-first'); if(pgFirst) pgFirst.onclick = () => { listPage = 1; render(); };
+  const pgPrev = document.getElementById('pg-prev'); if(pgPrev) pgPrev.onclick = () => { listPage = Math.max(1, listPage-1); render(); };
+  const pgNext = document.getElementById('pg-next'); if(pgNext) pgNext.onclick = () => { listPage = listPage+1; render(); };
+  const pgLast = document.getElementById('pg-last'); if(pgLast) pgLast.onclick = () => {
+    const total = DB.getLeads().filter(l=>leadMatchesFilters(l, listFilters)).length;
+    listPage = Math.max(1, Math.ceil(total/PAGE_SIZE)); render();
+  };
+
+  const exportBtn = document.getElementById('btn-export-list');
+  if(exportBtn) exportBtn.onclick = () => {
+    const filtered = DB.getLeads().filter(l=>leadMatchesFilters(l, listFilters));
+    const source = selectedLeadIds.size ? filtered.filter(l=>selectedLeadIds.has(l.id)) : filtered;
+    if(!source.length){ alert('Nothing to export.'); return; }
+    const rows = source.map(l=>({
+      'Lead ID': l.leadId, Village: l.village||'', Stage: stageLabel(l.stage),
+      Extent: l.extentValue, 'Extent Unit': EXTENT_UNITS[l.extentUnit]?.label||'',
+      Price: l.priceValue, 'Price Unit': EXTENT_UNITS[l.priceUnit]?.label||'',
+      Source: l.leadSource||'', Executive: l.assignedExecutive||'', 'Next Call': l.nextCallDate||''
+    }));
+    downloadBlob(toCSV(rows), 'Land_Leads_List.csv', 'text/csv;charset=utf-8;');
+  };
+
+  const newBtn = document.getElementById('btn-new-lead');
+  if(newBtn) newBtn.addEventListener('click', openNewLeadModal);
+}
+
+// ---- MASTERS -------------------------------------------------------------
+const STAGES_MASTER_KEY = '__stages__';
+
+function renderMasters(){
+  if(currentMasterKey === STAGES_MASTER_KEY) return renderStagesMaster();
+
+  const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
+  const items = DB.getAllMasters(def.key);
+  const rows = items.map(it=>`<tr>
+      ${def.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
+      <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-toggle="${it.id}" title="${it.active!==false?'Deactivate':'Activate'}">${it.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-edit="${it.id}" title="Edit">✎</button>
+        <button class="icon-btn icon-del" data-delete="${it.id}" title="Delete permanently">🗑</button>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="${def.fields.length+2}" class="empty">No entries yet.</td></tr>`;
+
+  const editing = editingMasterId ? items.find(i=>i.id===editingMasterId) : null;
+  const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
+
+  return `
+    <div class="page-header"><h1>Masters</h1></div>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Master Table</label><select id="master-select">
+          ${MASTER_DEFS.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
+          <option value="${STAGES_MASTER_KEY}">Stages / Pipeline</option>
+        </select></div>
+      </div>
+      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
+    </div>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr>${def.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Status</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing?('Edit '+singular):('Add '+singular)}</h2>
+      <div class="form-grid">
+        ${def.fields.map(f=>`<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`).join('')}
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="master-save">${editing?'Update':'Add'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="master-cancel">Cancel</button>':''}
+      </div>
+    </div>
+  `;
+}
+
+// Stages is a special "master": the seven pipeline stages are structurally
+// fixed (workflow rules refer to specific stage keys, and every lead's
+// history refers to them), so this only lets Sara rename each stage and
+// adjust its SLA (days) — no add/delete/reorder, unlike the other masters.
+function renderStagesMaster(){
+  const rows = STAGES.map((s,i)=>`<tr>
+      <td>${s.key}</td>
+      <td><input type="text" id="stg-label-${i}" value="${s.label}"></td>
+      <td><input type="number" id="stg-sla-${i}" value="${s.sla==null?'':s.sla}" placeholder="none" style="max-width:100px;"></td>
+    </tr>`).join('');
+  return `
+    <div class="page-header"><h1>Masters</h1></div>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Master Table</label><select id="master-select">
+          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
+          <option value="${STAGES_MASTER_KEY}" selected>Stages / Pipeline</option>
+        </select></div>
+      </div>
+      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">The stage sequence itself is fixed by the workflow rules (approvals, SLA ageing, lead history all refer to it) — you can rename each stage and adjust its SLA, but stages can't be added, removed, or reordered here.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Key</th><th>Label</th><th>SLA (days)</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="stages-save">Save Stages</button></div>
+  `;
+}
+
+function wireMastersEvents(){
+  const sel = document.getElementById('master-select');
+  const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; render(); };
+  const goBtn = document.getElementById('master-go');
+  if(goBtn) goBtn.onclick = switchMaster;
+  if(sel) sel.addEventListener('change', switchMaster);
+
+  if(currentMasterKey === STAGES_MASTER_KEY){
+    const saveBtn = document.getElementById('stages-save');
+    if(saveBtn) saveBtn.onclick = async () => {
+      const rows = STAGES.map((s,i)=>({
+        key: s.key,
+        label: (document.getElementById('stg-label-'+i).value || s.label).trim(),
+        sla: document.getElementById('stg-sla-'+i).value === '' ? null : parseInt(document.getElementById('stg-sla-'+i).value,10),
+      }));
+      await DB.saveStages(rows);
+      refreshStagesFromDB();
+      render();
+    };
+    return;
+  }
+
+  document.querySelectorAll('[data-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.edit; render(); });
+  document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleMaster(currentMasterKey, b.dataset.toggle); render(); });
+  document.querySelectorAll('[data-delete]').forEach(b=>b.onclick = async () => {
+    if(!confirm('Delete this entry permanently? This cannot be undone.')) return;
+    await DB.deleteMaster(currentMasterKey, b.dataset.delete);
+    if(editingMasterId===b.dataset.delete) editingMasterId=null;
+    render();
+  });
+  const saveBtn = document.getElementById('master-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const def = MASTER_DEFS.find(m=>m.key===currentMasterKey);
+    const fields = {};
+    let ok = true;
+    def.fields.forEach(f=>{
+      const el = document.getElementById('mf-'+f);
+      let v = el.value.trim();
+      if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
+      if(f===def.fields[0] && v==='' ) ok = false;
+      fields[f] = v;
+    });
+    if(!ok){ alert('The first field is required.'); return; }
+    if(editingMasterId){ await DB.updateMaster(currentMasterKey, editingMasterId, fields); editingMasterId=null; }
+    else { await DB.addMaster(currentMasterKey, fields); }
+    render();
+  };
+  const cancelBtn = document.getElementById('master-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
+}
+
+// ---- CONFIGURE (Lead Field Configuration) ---------------------------------
+function renderConfigure(){
+  const rows = DB.getFieldConfig();
+  const body = rows.map((r,i)=>`<tr>
+      <td>${r.label}</td>
+      <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="visible" ${r.visible?'checked':''}></td>
+      <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="mandatory" ${r.mandatory?'checked':''}></td>
+      <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="filter" ${r.filter?'checked':''}></td>
+    </tr>`).join('');
+
+  return `
+    <div class="page-header"><h1>Configure — Lead Fields</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Controls which fields appear on the New Lead form (Visible), which are required (Mandatory), and which show up as filters on All Leads / Progress Details (Filter).</p>
+    <div class="card" style="padding:0;overflow-x:auto;">
+      <table>
+        <tr><th>Field Name</th><th>Visible</th><th>Mandatory</th><th>Filter</th></tr>
+        ${body}
+      </table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="cfg-save">Save Configuration</button></div>
+  `;
+}
+function wireConfigureEvents(){
+  const rows = DB.getFieldConfig().map(r=>Object.assign({}, r));
+  document.querySelectorAll('[data-cfg-idx]').forEach(cb=>cb.addEventListener('change', () => {
+    const i = parseInt(cb.dataset.cfgIdx,10); const col = cb.dataset.cfgCol;
+    rows[i][col] = cb.checked;
+  }));
+  const saveBtn = document.getElementById('cfg-save');
+  if(saveBtn) saveBtn.onclick = async () => { await DB.saveFieldConfig(rows); render(); alert('Field configuration saved.'); };
+}
 
 // ---- SETUP / FIREBASE WIRING TAB ---------------------------------------
 function renderSetup(){
+  const live = DB.isLive();
   return `
+    <div class="page-header"><h1>Connect to Firebase</h1></div>
     <div class="card">
-      <h2 class="section-title" style="margin-top:0;">Going live on Firebase</h2>
-      <p style="font-size:13.5px;line-height:1.6;">This prototype currently stores everything in memory (the <code>DB</code> object in the script), so refreshing the page resets it to the sample leads below. To make it persistent — same pattern as your Sales Dashboard and Document Management System — wire it to a Firebase project:</p>
-      <p style="font-size:13.5px;"><b>1. Add the SDK</b> to the <code>&lt;head&gt;</code>:</p>
-      <div class="setup-code">&lt;script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"&gt;&lt;/script&gt;
-&lt;script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"&gt;&lt;/script&gt;
-&lt;script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"&gt;&lt;/script&gt;</div>
-      <p style="font-size:13.5px;"><b>2. Initialize</b> with your project config, then replace the <code>DB</code> object near the top of the script with the Firestore-backed version — the exact drop-in code and field mapping is written out in comments right above the <code>DB</code> object in this file, so search for <code>FIREBASE WIRING</code>.</p>
-      <p style="font-size:13.5px;"><b>3. Documents</b> — the "Documents" tab in each lead currently stores a name/note only. Swapping in Firebase Storage means the "Add Document" action uploads to <code>leads/{leadId}/{filename}</code> and stores the download URL instead.</p>
-      <p style="font-size:13.5px;"><b>4. Security rules</b> — until Phase 2 login is built, restrict Firestore rules to your project's authorized domain, and consider a simple shared-password gate if this will be reachable outside your office network.</p>
-      <p style="font-size:12.5px;color:var(--muted);">Everything else in the app — the pipeline board, dashboard, forms, and stage logic — is unaffected by this swap, since it all reads and writes through the <code>DB</code> object.</p>
+      <h2 class="section-title" style="margin-top:0;">${live ? 'Connected — managing your live project' : 'Going live on Firebase'}</h2>
+      ${live ? `<p style="font-size:13.5px;line-height:1.6;">This app is currently reading and writing to your Firestore project in real time — leads, all seven masters, and (if Storage is enabled) documents. Everything below still applies if you ever move to a different project.</p>` : `
+      <p style="font-size:13.5px;line-height:1.6;">This app is fully wired for Firebase — it's just not pointed at a project yet. Three steps:</p>
+      <p style="font-size:13.5px;"><b>1. Create or reuse a Firebase project</b> (Firebase Console), enable Firestore and Storage.</p>
+      <p style="font-size:13.5px;"><b>2. Paste your config</b> into the <code>FIREBASE_CONFIG</code> object near the top of this file's script — the exact spot is commented "YOUR FIREBASE CONFIG". It looks like:</p>
+      <div class="setup-code">const FIREBASE_CONFIG = {
+  apiKey: "AIza...",
+  authDomain: "your-project.firebaseapp.com",
+  projectId: "your-project",
+  storageBucket: "your-project.appspot.com",
+  messagingSenderId: "...",
+  appId: "..."
+};</div>
+      <p style="font-size:13.5px;"><b>3. Reopen the file.</b> On first connect, it automatically seeds all seven master collections and a set of sample leads if they're empty, then switches the badge in the sidebar to "Firebase Connected."</p>
+      `}
+      <p style="font-size:13.5px;"><b>Security rules</b> — until Phase 2 login is built, keep this test-mode rule (open, but time-boxed) rather than leaving it permanently open:</p>
+      <div class="setup-code">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.time &lt; timestamp.date(2026, 12, 31);
+    }
+  }
+}</div>
+      <p style="font-size:13.5px;">And the matching Storage rule, for document uploads:</p>
+      <div class="setup-code">rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /leads/{leadId}/{fileName} {
+      allow read, write: if request.time &lt; timestamp.date(2026, 12, 31);
+    }
+  }
+}</div>
+      <p style="font-size:12.5px;color:var(--muted);">Both expire the open access at the date shown — extend it, or replace it with real authentication, before then. Once Phase 2 login is in place, swap these for rules scoped to <code>request.auth</code>.</p>
+      <p style="font-size:12.5px;color:var(--muted);">Collections used: <code>leads</code>, plus one per master — ${MASTER_DEFS.map(m=>'<code>'+m.collection+'</code>').join(', ')}.</p>
     </div>
   `;
 }
 
 // ---- MODALS: New Lead ---------------------------------------------------
 function openNewLeadModal(){
+  const sources = DB.getMasters('leadSources');
+  const cps = DB.getMasters('channelPartners');
+  const villages = DB.getMasters('villages');
+  const classes = DB.getMasters('landClasses');
+  const execs = DB.getMasters('executives');
+
   const html = `
     <div class="modal-overlay" id="overlay">
       <div class="modal">
         <div class="modal-head"><h3>New Land Lead</h3><button class="x" id="close-x">&times;</button></div>
         <div class="modal-body">
           <div class="form-grid">
-            <div><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
-            <div><label>Lead Source</label><select id="nl-source">${LEAD_SOURCES.map(s=>`<option>${s}</option>`).join('')}</select></div>
-            <div><label>Channel Partner Code</label><input type="text" id="nl-cp" placeholder="e.g. CP-014"></div>
-            <div><label>Assigned Executive</label><input type="text" id="nl-exec" placeholder="Executive name"></div>
-            <div><label>Village Name</label><input type="text" id="nl-village"></div>
-            <div><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
-            <div class="full"><label>Site Location</label><input type="text" id="nl-loc"></div>
-            <div><label>Google Pin / Coordinates</label><input type="text" id="nl-pin" placeholder="lat, long"></div>
-            <div><label>Land Classification</label><select id="nl-class">${LAND_CLASSES.map(c=>`<option>${c}</option>`).join('')}</select></div>
-            <div>
+            <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
+            <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
+            <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
+            <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}</option>`).join('')}</select></div>
+            <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
+            <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
+            <div class="full" data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
+            <div data-field="googlePin"><label>Google Pin / Coordinates</label><input type="text" id="nl-pin" placeholder="lat, long"></div>
+            <div data-field="landClassification"><label>Land Classification</label><select id="nl-class">${classes.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
+            <div data-field="extent">
               <label>Total Land Extent</label>
               <div class="field-pair"><input type="number" id="nl-extent-val" step="0.01"><select id="nl-extent-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
             </div>
-            <div>
+            <div data-field="price">
               <label>Quoted Price (per unit)</label>
               <div class="field-pair"><input type="number" id="nl-price-val" step="0.01"><select id="nl-price-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
             </div>
             <div class="full"><div class="computed" id="nl-computed"></div></div>
-            <div><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
-            <div><label>Landowner Phone</label><input type="text" id="nl-owner-phone"></div>
-            <div><label>Mediator / Broker Name</label><input type="text" id="nl-med-name"></div>
+            <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
+            <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone"></div>
+            <div data-field="mediatorName"><label>Mediator / Broker Name</label><input type="text" id="nl-med-name"></div>
             <div><label>Mediator Phone</label><input type="text" id="nl-med-phone"></div>
-            <div class="full"><label>Next Call Date</label><input type="date" id="nl-nextcall"></div>
+            <div class="full" data-field="nextCallDate"><label>Next Call Date</label><input type="date" id="nl-nextcall"></div>
           </div>
         </div>
         <div class="modal-footer">
@@ -483,6 +1338,20 @@ function openNewLeadModal(){
       </div>
     </div>`;
   document.getElementById('modal-root').innerHTML = html;
+
+  // Apply the Configure page's Visible/Mandatory settings to this form.
+  const fcfg = fieldConfigMap();
+  Object.keys(fcfg).forEach(key=>{
+    const cfg = fcfg[key];
+    const wrap = document.querySelector(`[data-field="${key}"]`);
+    if(!wrap) return;
+    if(cfg.visible===false) wrap.style.display = 'none';
+    if(cfg.mandatory && cfg.visible!==false){
+      const lbl = wrap.querySelector('label');
+      if(lbl && !lbl.querySelector('.req-star')) lbl.innerHTML += ' <span class="req-star" style="color:var(--danger)">*</span>';
+    }
+  });
+
   const recompute = () => {
     const ev = parseFloat(document.getElementById('nl-extent-val').value)||0;
     const eu = document.getElementById('nl-extent-unit').value;
@@ -501,12 +1370,20 @@ function openNewLeadModal(){
   document.getElementById('close-x').onclick = closeModal;
   document.getElementById('cancel-nl').onclick = closeModal;
   document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
-  document.getElementById('save-nl').onclick = () => {
+  document.getElementById('save-nl').onclick = async () => {
+    // Enforce Mandatory flags from the Configure page (skip fields hidden by Visible=false).
+    for(const [key, ids] of Object.entries(FIELD_TO_INPUT)){
+      const cfg = fcfg[key];
+      if(cfg && cfg.mandatory && cfg.visible!==false){
+        const el = document.getElementById(ids[0]);
+        if(el && !el.value.trim()){ alert((cfg.label||key) + ' is required.'); return; }
+      }
+    }
     const village = document.getElementById('nl-village').value.trim();
-    if(!village){ alert('Village name is required.'); return; }
+    if(!village && fcfg.village?.visible!==false){ alert('Village is required.'); return; }
     const exec = document.getElementById('nl-exec').value.trim() || 'Unassigned';
     const lead = {
-      id: uid('LL-2026'),
+      leadId: uid('LL-2026'),
       createdAt: new Date().toISOString(),
       leadSourceDateTime: document.getElementById('nl-datetime').value,
       leadSource: document.getElementById('nl-source').value,
@@ -536,44 +1413,42 @@ function openNewLeadModal(){
       finalPrice:null, finalDate:'', outcome:'',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:exec, note:'Lead created'}],
     };
-    DB.addLead(lead);
+    await DB.addLead(lead);
     closeModal();
-    currentView = 'board';
-    render();
+    goToLeadsList({});
   };
 }
 
 // ---- MODAL: Lead Detail --------------------------------------------------
-let detailTab = 'overview';
 function openLeadDetail(id){
-  detailTab = 'overview';
+  currentDetailLeadId = id;
   renderDetailModal(id);
 }
 
 function renderDetailModal(id){
   const l = DB.getLead(id);
   if(!l){ closeModal(); return; }
-  const tabs = ['overview','stage','feasibility','documents','negotiation','history'];
-  const tabLabels = {overview:'Overview', stage:'Stage & Actions', feasibility:'Feasibility', documents:'Documents', negotiation:'Negotiation', history:'History'};
-
-  const stageTrack = STAGES.map(s=>{
-    const cls = s.key===l.stage ? 'now' : (STAGE_INDEX[s.key] < STAGE_INDEX[l.stage] ? 'done' : '');
-    return `<span class="stage-pill ${cls}">${s.label}</span>`;
-  }).join('');
 
   document.getElementById('modal-root').innerHTML = `
     <div class="modal-overlay" id="overlay">
       <div class="modal" style="max-width:820px;">
         <div class="modal-head">
-          <h3>${l.id} — ${l.village||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h3>
+          <h3>${l.leadId} — ${l.village||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h3>
           <button class="x" id="close-x">&times;</button>
         </div>
-        <div class="modal-body">
-          <div class="stage-track">${stageTrack}</div>
-          <div class="toolbar" style="margin-bottom:10px;">
-            ${tabs.map(t=>`<button class="btn btn-sm ${detailTab===t?'btn-teal':'btn-ghost'}" data-tab="${t}">${tabLabels[t]}</button>`).join('')}
-          </div>
-          <div id="detail-tab-body"></div>
+        <div class="modal-body" id="detail-tab-body" style="max-height:70vh;overflow-y:auto;">
+          <h2 class="section-title" style="margin-top:0;">Overview</h2>
+          ${renderOverviewTab(l)}
+          <h2 class="section-title">Stage &amp; Actions</h2>
+          ${renderStageTab(l)}
+          <h2 class="section-title">Feasibility</h2>
+          ${renderFeasibilityTab(l)}
+          <h2 class="section-title">Documents</h2>
+          ${renderDocumentsTab(l)}
+          <h2 class="section-title">Negotiation</h2>
+          ${renderNegotiationTab(l)}
+          <h2 class="section-title">History</h2>
+          ${renderHistoryTab(l)}
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost" id="close-x2">Close</button>
@@ -584,25 +1459,15 @@ function renderDetailModal(id){
   document.getElementById('close-x').onclick = closeModal;
   document.getElementById('close-x2').onclick = closeModal;
   document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
-  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick = ()=>{ detailTab=b.dataset.tab; renderDetailModal(id); });
 
-  document.getElementById('detail-tab-body').innerHTML = renderDetailTab(l);
   wireDetailTabEvents(l);
-}
-
-function renderDetailTab(l){
-  if(detailTab==='overview') return renderOverviewTab(l);
-  if(detailTab==='stage') return renderStageTab(l);
-  if(detailTab==='feasibility') return renderFeasibilityTab(l);
-  if(detailTab==='documents') return renderDocumentsTab(l);
-  if(detailTab==='negotiation') return renderNegotiationTab(l);
-  if(detailTab==='history') return renderHistoryTab(l);
 }
 
 function renderOverviewTab(l){
   const sqft = leadExtentSqft(l), pps = leadPricePerSqft(l);
   return `
     <div class="form-grid">
+      <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
@@ -625,6 +1490,9 @@ function renderStageTab(l){
   const idx = STAGE_INDEX[l.stage];
   const next = STAGES[idx+1];
   const canGoBack = idx > 0;
+  const holdReasons = DB.getMasters('holdReasons');
+  const dropReasons = DB.getMasters('dropReasons');
+
   const holdBlock = `
     <fieldset>
       <legend>On Hold</legend>
@@ -633,7 +1501,7 @@ function renderStageTab(l){
         <button class="btn btn-sm btn-teal" id="resume-btn">Resume (clear hold)</button>
       ` : `
         <div class="form-grid">
-          <div><label>Reason</label><select id="hold-reason">${HOLD_REASONS.map(r=>`<option>${r}</option>`).join('')}</select></div>
+          <div><label>Reason</label><select id="hold-reason">${holdReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
           <div><label>Notes</label><input type="text" id="hold-notes"></div>
         </div>
         <button class="btn btn-sm btn-ghost" id="hold-btn" style="margin-top:8px;">Put On Hold</button>
@@ -667,7 +1535,7 @@ function renderStageTab(l){
   const dropBlock = l.stage!=='closed' ? `
     <fieldset><legend>Drop this Lead</legend>
       <div class="form-grid">
-        <div><label>Reason</label><select id="drop-reason">${DROP_REASONS.map(r=>`<option>${r}</option>`).join('')}</select></div>
+        <div><label>Reason</label><select id="drop-reason">${dropReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
         <div><label>Notes</label><input type="text" id="drop-notes"></div>
       </div>
       <button class="btn btn-sm btn-danger" id="drop-btn" style="margin-top:8px;">Close as Dropped</button>
@@ -676,11 +1544,11 @@ function renderStageTab(l){
   const closedSummary = l.stage==='closed' ? `
     <fieldset><legend>Outcome</legend>
       ${l.outcome==='acquired'
-        ? `<p style="font-size:13px;">Acquired on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.priceUnit]?.label}. Approved by ${l.approval.approver||'—'}.</p>`
+        ? `<p style="font-size:13px;">Acquired on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.priceUnit]?.label}. Approved by ${l.approval && l.approval.approver||'—'}.</p>`
         : `<p style="font-size:13px;">Dropped — <b>${l.reasonCode||'—'}</b>${l.reasonNotes?': '+l.reasonNotes:''}</p>`}
     </fieldset>` : '';
 
-  return `${gateBlock}${canGoBack && next && next.key!=='closed' && !gateBlock.includes('back-btn') ? '' : ''}${holdBlock}${dropBlock}${closedSummary}`;
+  return `${gateBlock}${holdBlock}${dropBlock}${closedSummary}`;
 }
 
 function renderFeasibilityTab(l){
@@ -696,15 +1564,25 @@ function renderFeasibilityTab(l){
 }
 
 function renderDocumentsTab(l){
-  const rows = (l.documents||[]).map((d,i)=>`<div class="doc-row"><span>${d.name} <span style="color:var(--muted)">— ${d.url}</span></span><span style="color:var(--muted)">${fmtDate(d.addedAt)}</span></div>`).join('') || '<div class="empty">No documents recorded yet.</div>';
+  const rows = (l.documents||[]).map(d=>`<div class="doc-row"><span>${d.name} ${d.url && /^https?:/.test(d.url) ? `<a href="${d.url}" target="_blank" rel="noopener">(view)</a>` : `<span style="color:var(--muted)">— ${d.url}</span>`}</span><span style="color:var(--muted)">${fmtDate(d.addedAt)}</span></div>`).join('') || '<div class="empty">No documents recorded yet.</div>';
+  const liveUpload = DB.isLive() && DB.hasStorage && DB.hasStorage();
   return `
     ${rows}
-    <div class="inline-add">
-      <input type="text" id="doc-name" placeholder="Document name (e.g. FMB Drawing, Patta, EC)">
-      <input type="text" id="doc-url" placeholder="Reference / URL (placeholder until Firebase Storage is wired)">
-      <button class="btn btn-sm btn-teal" id="doc-add">Add</button>
-    </div>
-    <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">In the live version, this becomes an actual file upload to Firebase Storage — see the "Connect to Firebase" tab.</p>
+    ${liveUpload ? `
+      <div class="inline-add">
+        <input type="text" id="doc-name" placeholder="Document name (e.g. FMB Drawing, Patta, EC)">
+        <input type="file" id="doc-file">
+        <button class="btn btn-sm btn-teal" id="doc-add">Upload</button>
+      </div>
+      <div id="doc-upload-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;"></div>
+    ` : `
+      <div class="inline-add">
+        <input type="text" id="doc-name" placeholder="Document name (e.g. FMB Drawing, Patta, EC)">
+        <input type="text" id="doc-url" placeholder="Reference / URL">
+        <button class="btn btn-sm btn-teal" id="doc-add">Add</button>
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">${DB.isLive() ? 'Enable Firebase Storage on your project to turn this into real file uploads.' : 'Connect this app to Firebase (see the Connect to Firebase page) to enable real file uploads here.'}</p>
+    `}
   `;
 }
 
@@ -730,16 +1608,16 @@ function renderHistoryTab(l){
 }
 
 function wireDetailTabEvents(l){
-  if(detailTab==='overview'){
+  {
     const btn = document.getElementById('ov-save-call');
-    if(btn) btn.onclick = () => {
-      DB.updateLead(l.id, { nextCallDate: document.getElementById('ov-nextcall').value });
+    if(btn) btn.onclick = async () => {
+      await DB.updateLead(l.id, { nextCallDate: document.getElementById('ov-nextcall').value });
       renderDetailModal(l.id); render();
     };
   }
-  if(detailTab==='stage'){
+  {
     const advance = document.getElementById('advance-btn');
-    if(advance) advance.onclick = () => {
+    if(advance) advance.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const next = STAGES[idx+1];
       const approver = document.getElementById('gate-approver')?.value.trim();
@@ -747,7 +1625,7 @@ function wireDetailTabEvents(l){
         alert('An approver name is required for this transition.'); return;
       }
       const patch = { stage: next.key };
-      patch.stageHistory = l.stageHistory.concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='negotiation'?'Approved to enter Negotiation':(next.key==='closed'?'Closed as Acquired':'Advanced')}]);
+      patch.stageHistory = (l.stageHistory||[]).concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='negotiation'?'Approved to enter Negotiation':(next.key==='closed'?'Closed as Acquired':'Advanced')}]);
       if(next.key==='negotiation'){
         patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks')?.value.trim()||'' };
       }
@@ -757,58 +1635,80 @@ function wireDetailTabEvents(l){
         patch.finalDate = document.getElementById('gate-final-date')?.value || todayStr();
         patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks')?.value.trim()||'' };
       }
-      DB.updateLead(l.id, patch);
+      await DB.updateLead(l.id, patch);
       renderDetailModal(l.id); render();
     };
     const back = document.getElementById('back-btn');
-    if(back) back.onclick = () => {
+    if(back) back.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const prev = STAGES[idx-1];
-      DB.updateLead(l.id, { stage: prev.key, stageHistory: l.stageHistory.concat([{stage:prev.key, at:new Date().toISOString(), by:l.assignedExecutive, note:'Moved back a stage'}]) });
+      await DB.updateLead(l.id, { stage: prev.key, stageHistory: (l.stageHistory||[]).concat([{stage:prev.key, at:new Date().toISOString(), by:l.assignedExecutive, note:'Moved back a stage'}]) });
       renderDetailModal(l.id); render();
     };
     const holdBtn = document.getElementById('hold-btn');
-    if(holdBtn) holdBtn.onclick = () => {
-      DB.updateLead(l.id, { onHold: { active:true, reasonCode: document.getElementById('hold-reason').value, notes: document.getElementById('hold-notes').value.trim(), since:new Date().toISOString() } });
+    if(holdBtn) holdBtn.onclick = async () => {
+      await DB.updateLead(l.id, { onHold: { active:true, reasonCode: document.getElementById('hold-reason').value, notes: document.getElementById('hold-notes').value.trim(), since:new Date().toISOString() } });
       renderDetailModal(l.id); render();
     };
     const resumeBtn = document.getElementById('resume-btn');
-    if(resumeBtn) resumeBtn.onclick = () => {
-      DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' } });
+    if(resumeBtn) resumeBtn.onclick = async () => {
+      await DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' } });
       renderDetailModal(l.id); render();
     };
     const dropBtn = document.getElementById('drop-btn');
-    if(dropBtn) dropBtn.onclick = () => {
+    if(dropBtn) dropBtn.onclick = async () => {
       const reason = document.getElementById('drop-reason').value;
       const notes = document.getElementById('drop-notes').value.trim();
-      DB.updateLead(l.id, { stage:'closed', outcome:'dropped', reasonCode:reason, reasonNotes:notes,
-        stageHistory: l.stageHistory.concat([{stage:'closed', at:new Date().toISOString(), by:l.assignedExecutive, note:'Dropped — '+reason}]) });
+      await DB.updateLead(l.id, { stage:'closed', outcome:'dropped', reasonCode:reason, reasonNotes:notes,
+        stageHistory: (l.stageHistory||[]).concat([{stage:'closed', at:new Date().toISOString(), by:l.assignedExecutive, note:'Dropped — '+reason}]) });
       renderDetailModal(l.id); render();
     };
   }
-  if(detailTab==='feasibility'){
-    document.getElementById('save-feas').onclick = () => {
-      DB.updateLead(l.id, { feasibility: {
+  {
+    const btn = document.getElementById('save-feas');
+    if(btn) btn.onclick = async () => {
+      await DB.updateLead(l.id, { feasibility: {
         technical: { status: document.getElementById('feas-technical-status').value, notes: document.getElementById('feas-technical-notes').value },
         financial: { status: document.getElementById('feas-financial-status').value, notes: document.getElementById('feas-financial-notes').value },
       }});
       renderDetailModal(l.id);
     };
   }
-  if(detailTab==='documents'){
-    document.getElementById('doc-add').onclick = () => {
+  {
+    const liveUpload = DB.isLive() && DB.hasStorage && DB.hasStorage();
+    const btn = document.getElementById('doc-add');
+    if(btn) btn.onclick = async () => {
       const name = document.getElementById('doc-name').value.trim();
-      const url = document.getElementById('doc-url').value.trim() || '(no reference given)';
-      if(!name) return;
-      DB.updateLead(l.id, { documents: (l.documents||[]).concat([{name, url, addedAt:new Date().toISOString()}]) });
+      if(!name){ alert('Enter a document name.'); return; }
+      if(liveUpload){
+        const fileInput = document.getElementById('doc-file');
+        const file = fileInput.files[0];
+        if(!file){ alert('Choose a file to upload.'); return; }
+        const statusEl = document.getElementById('doc-upload-status');
+        statusEl.textContent = 'Uploading…';
+        try{
+          const path = 'leads/'+l.id+'/'+Date.now()+'_'+file.name;
+          const ref = DB.storageRef(path);
+          await ref.put(file);
+          const url = await ref.getDownloadURL();
+          await DB.updateLead(l.id, { documents: (l.documents||[]).concat([{name, url, storagePath:path, addedAt:new Date().toISOString()}]) });
+        }catch(err){
+          statusEl.textContent = 'Upload failed: ' + err.message;
+          return;
+        }
+      } else {
+        const url = document.getElementById('doc-url').value.trim() || '(no reference given)';
+        await DB.updateLead(l.id, { documents: (l.documents||[]).concat([{name, url, addedAt:new Date().toISOString()}]) });
+      }
       renderDetailModal(l.id);
     };
   }
-  if(detailTab==='negotiation'){
-    document.getElementById('neg-add').onclick = () => {
+  {
+    const btn = document.getElementById('neg-add');
+    if(btn) btn.onclick = async () => {
       const amount = parseFloat(document.getElementById('neg-amount').value);
       if(isNaN(amount)) { alert('Enter an amount.'); return; }
-      DB.updateLead(l.id, { negotiationLog: (l.negotiationLog||[]).concat([{
+      await DB.updateLead(l.id, { negotiationLog: (l.negotiationLog||[]).concat([{
         date: document.getElementById('neg-date').value, offerBy: document.getElementById('neg-by').value,
         amount, notes: document.getElementById('neg-notes').value.trim()
       }])});
@@ -818,69 +1718,46 @@ function wireDetailTabEvents(l){
 }
 
 // ---- shared modal / view wiring -----------------------------------------
-function closeModal(){ document.getElementById('modal-root').innerHTML = ''; }
+function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; }
 
 function wireViewEvents(){
-  document.querySelectorAll('.lead-card, tr.clickable').forEach(el=>{
-    el.addEventListener('click', () => openLeadDetail(el.dataset.id));
-  });
-  if(currentView==='list'){
-    const bind = (id,key,evt='change') => { const el=document.getElementById(id); if(el) el.addEventListener(evt, ()=>{ listFilters[key]=el.value; render(); }); };
-    bind('f-q','q','input'); bind('f-stage','stage'); bind('f-source','source'); bind('f-exec','exec');
+  if(currentView==='dashboard'){
+    document.querySelectorAll('[data-drill]').forEach(el=>el.addEventListener('click', ()=>{
+      const d = el.dataset.drill;
+      if(d==='active') goToLeadsList({ excludeClosed:true });
+      if(d==='onHold') goToLeadsList({ onHold:true });
+      if(d==='calls') goToLeadsList({ excludeClosed:true, callDueOrOverdue:true });
+    }));
+    document.querySelectorAll('[data-stage]').forEach(el=>el.addEventListener('click', ()=>goToProgress(el.dataset.stage)));
+    document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
+    document.querySelectorAll('[data-cp]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ channelPartner: el.dataset.cp })));
+    document.querySelectorAll('[data-open-id]').forEach(el=>el.addEventListener('click', ()=>openLeadDetail(el.dataset.openId)));
   }
+
+  if(currentView==='progress'){ wireProgressEvents(); }
+  if(currentView==='list'){ wireListEvents(); }
+  if(currentView==='reports'){ wireReportsEvents(); }
+  if(currentView==='configure'){ wireConfigureEvents(); }
+  if(currentView==='masters'){ wireMastersEvents(); }
 }
 
-document.getElementById('btn-new-lead').addEventListener('click', openNewLeadModal);
-document.querySelectorAll('#tabs button').forEach(b=>{
-  b.addEventListener('click', () => { currentView = b.dataset.view; render(); });
-});
+// ---- Sidebar navigation ---------------------------------------------------
+function wireSidebarNav(){
+  document.querySelectorAll('#tabs > button[data-view]').forEach(b=>{
+    b.onclick = () => {
+      if(b.dataset.view==='list'){
+        // Always reset to the unfiltered All Leads view.
+        goToLeadsList({});
+      } else {
+        currentView = b.dataset.view;
+        render();
+      }
+    };
+  });
+}
+wireSidebarNav();
 
-render();
-
-/* =========================================================================
-   FIREBASE WIRING (Phase 1 go-live) — reference implementation
-   =========================================================================
-   1. Add the three compat script tags shown on the "Connect to Firebase" tab
-      to <head>, then initialize once, near the top of this script block:
-
-        const firebaseConfig = { apiKey:"...", authDomain:"...", projectId:"...",
-          storageBucket:"...", messagingSenderId:"...", appId:"..." };
-        firebase.initializeApp(firebaseConfig);
-        const dbFS = firebase.firestore();
-        const storage = firebase.storage();
-
-   2. Replace the in-memory DB object above with:
-
-        const DB = {
-          _cache: [],
-          async init(){
-            const snap = await dbFS.collection('leads').orderBy('createdAt','desc').get();
-            this._cache = snap.docs.map(d => Object.assign({id:d.id}, d.data()));
-          },
-          getLeads(){ return this._cache; },
-          async addLead(lead){
-            const ref = await dbFS.collection('leads').add(lead);
-            lead.id = ref.id; this._cache.unshift(lead);
-          },
-          async updateLead(id, patch){
-            await dbFS.collection('leads').doc(id).update(patch);
-            const i = this._cache.findIndex(l=>l.id===id);
-            if(i>-1) this._cache[i] = Object.assign({}, this._cache[i], patch);
-          },
-          getLead(id){ return this._cache.find(l=>l.id===id); },
-        };
-        // then call `await DB.init()` before the first `render()` call, and
-        // wrap addLead/updateLead call sites with await since they become async.
-
-   3. For documents, replace the "Add" handler in renderDocumentsTab's wiring
-      with a real <input type="file"> upload to
-      `storage.ref('leads/'+l.id+'/'+file.name)`, then store the resulting
-      `getDownloadURL()` in place of the placeholder `url` field.
-
-   4. Masters (channel partners, villages, users, reason codes) — Phase 2 —
-      become their own Firestore collections, replacing the hardcoded arrays
-      (LEAD_SOURCES, DROP_REASONS, etc.) at the top of this file.
-   ========================================================================= */
+boot();
 </script>
 </body>
 </html>
