@@ -698,6 +698,14 @@ async function boot(){
   if(!isPlaceholder && sdkLoaded){
     try{
       firebase.initializeApp(cfg);
+      // Explicit LOCAL persistence — the sign-in session survives a page
+      // refresh (and a full browser restart). This is Firebase's default
+      // anyway, but setting it explicitly avoids silently falling back to
+      // an in-memory-only session in some private/incognito browser modes.
+      if(typeof firebase.auth === 'function'){
+        try{ await firebase.auth().setPersistence(firebase.auth.Auth.Persistence.LOCAL); }
+        catch(persistErr){ console.warn('Could not set Firebase Auth persistence to LOCAL — sessions may not survive a refresh in this browser mode.', persistErr); }
+      }
       const fsdb = firebase.firestore();
       const storage = (typeof firebase.storage === 'function') ? firebase.storage() : null;
       DB = new FirestoreDB(fsdb, storage);
@@ -758,10 +766,57 @@ function ensureDbInit(){
   return _dbInitPromise;
 }
 
+// ---- Auto sign-out after inactivity -------------------------------------
+// Signs the user out after 20 minutes with no mouse/keyboard/touch/scroll
+// activity, regardless of which page they're on. The listeners are wired
+// once, globally, near boot(); resetIdleTimer() itself is a no-op whenever
+// nobody's signed in, so it's harmless to leave them attached across
+// sign-in/out cycles.
+const IDLE_TIMEOUT_MS = 20 * 60 * 1000;
+const IDLE_ACTIVITY_EVENTS = ['mousemove','mousedown','keydown','scroll','touchstart','click'];
+let idleTimer = null;
+let pendingLoginMessage = null;
+function resetIdleTimer(){
+  if(!currentUser) return;
+  if(idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(onIdleTimeout, IDLE_TIMEOUT_MS);
+}
+function stopIdleTimer(){
+  if(idleTimer){ clearTimeout(idleTimer); idleTimer = null; }
+}
+async function onIdleTimeout(){
+  if(!currentUser) return;
+  await doLogout('You were signed out after 20 minutes of inactivity.');
+}
+(function wireIdleTimerListeners(){
+  IDLE_ACTIVITY_EVENTS.forEach(evt => document.addEventListener(evt, resetIdleTimer, { passive:true }));
+})();
+
+// Shared sign-out path for both the manual "Log out" button and the idle
+// timeout, so both behave identically (including in demo mode, where
+// there's no auth listener to drive the login screen back up on its own).
+async function doLogout(reason){
+  stopIdleTimer();
+  if(DB.isLive()){
+    pendingLoginMessage = reason || null;
+    await firebase.auth().signOut();
+  } else {
+    await DB.logout();
+    currentUser = null;
+    showLoginScreen(reason);
+  }
+}
+
 function initAuth(){
   if(DB.isLive() && typeof firebase.auth === 'function'){
     firebase.auth().onAuthStateChanged(async fbUser => {
-      if(!fbUser){ currentUser = null; showLoginScreen(); return; }
+      if(!fbUser){
+        currentUser = null;
+        stopIdleTimer();
+        const msg = pendingLoginMessage; pendingLoginMessage = null;
+        showLoginScreen(msg);
+        return;
+      }
       try{
         await ensureDbInit();
         const doc = await DB.fsdb.collection('m_users').doc(fbUser.uid).get();
@@ -801,6 +856,7 @@ function enterApp(){
   renderUserInfo();
   if(!canAccessView(currentView)) currentView = 'dashboard';
   render();
+  resetIdleTimer();
 }
 
 function applyRoleVisibility(){
@@ -818,10 +874,7 @@ function renderUserInfo(){
   el.innerHTML = `
     <div class="who"><b>${currentUser.name}</b><span>${ROLE_LABELS[currentUser.role]||currentUser.role}</span></div>
     <button class="btn btn-sm btn-ghost" id="logout-btn">Log out</button>`;
-  document.getElementById('logout-btn').onclick = async () => {
-    if(DB.isLive()) await firebase.auth().signOut();
-    else { await DB.logout(); currentUser = null; showLoginScreen(); }
-  };
+  document.getElementById('logout-btn').onclick = () => doLogout();
 }
 
 function showLoginScreen(errorMsg){
