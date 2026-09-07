@@ -707,8 +707,15 @@ async function boot(){
         if(currentUser) render();
         if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
       });
-      await DB.init();
-      await DB.ready();
+      // DB.init() (seeding + Firestore listeners) is deliberately NOT called
+      // here. Security rules that require request.auth != null (the live
+      // setup guide's recommended rules) reject any Firestore read made
+      // before someone has signed in — running init() this early would
+      // always fail with "Missing or insufficient permissions" and
+      // permanently fall back to demo mode for the rest of the page load,
+      // even though the config and rules are actually fine. ensureDbInit()
+      // runs it instead, once, right after sign-in succeeds — see
+      // initAuth()'s onAuthStateChanged handler below.
       showConnectionBadge(true);
       renderDemoBanner(false);
     }catch(err){
@@ -739,11 +746,24 @@ async function boot(){
 // =========================================================================
 let currentUser = null;
 
+// Firestore reads/writes under the recommended live security rules require
+// a signed-in user (request.auth != null), so FirestoreDB's init() — which
+// seeds every collection and subscribes to it — can only safely run once
+// someone has actually signed in. Called once, right after the first
+// successful sign-in (see onAuthStateChanged below); harmless to call again.
+let _dbInitPromise = null;
+function ensureDbInit(){
+  if(!DB.isLive()) return Promise.resolve();
+  if(!_dbInitPromise) _dbInitPromise = DB.init().then(()=>DB.ready());
+  return _dbInitPromise;
+}
+
 function initAuth(){
   if(DB.isLive() && typeof firebase.auth === 'function'){
     firebase.auth().onAuthStateChanged(async fbUser => {
       if(!fbUser){ currentUser = null; showLoginScreen(); return; }
       try{
+        await ensureDbInit();
         const doc = await DB.fsdb.collection('m_users').doc(fbUser.uid).get();
         if(doc.exists && doc.data().active !== false){
           currentUser = Object.assign({ uid: fbUser.uid }, doc.data());
