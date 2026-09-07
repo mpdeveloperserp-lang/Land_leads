@@ -44,6 +44,7 @@
   .icon-del:hover{border-color:var(--danger);color:var(--danger);}
   .icon-ok{color:var(--ok);border-color:#bfe3d1;}
   .sidebar-foot{padding:14px 20px 18px;border-top:1px solid var(--border);}
+  .nav-group-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--gold);font-weight:700;padding:14px 20px 4px;}
   .main-col{flex:1;min-width:0;display:flex;flex-direction:column;}
   .topbar{background:#fff;border-bottom:1px solid var(--border);padding:15px 26px;display:flex;justify-content:space-between;align-items:center;}
   .topbar .page-title{font-size:17px;font-weight:700;color:var(--navy);}
@@ -186,6 +187,10 @@
       <button data-view="reports">Reports</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
+      <div class="nav-group-label" id="admin-nav-label">Admin</div>
+      <button data-view="users">Manage Users</button>
+      <button data-view="workflow">Workflow Config</button>
+      <button data-view="statusConfig">Status Config</button>
     </nav>
     <div class="sidebar-foot" id="conn-badge"></div>
   </aside>
@@ -263,13 +268,13 @@ function refreshStagesFromDB(){
 }
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
 // Admin: full access. Manager: all leads/progress + can approve workflow
 // gates, no Masters/Configure. Executive: only their own assigned leads —
-// lead data & progress only, nothing else. See the "Users & Access" master.
+// lead data & progress only, nothing else. See the "Manage Users" nav module.
 const ROLES = ['admin','manager','executive'];
 const ROLE_LABELS = { admin:'Admin', manager:'Manager', executive:'Executive' };
 const ROLE_RANK = { executive:1, manager:2, admin:3 };
@@ -280,6 +285,9 @@ const VIEW_ACCESS = {
   reports:   ['admin','manager'],
   configure: ['admin'],
   masters:   ['admin'],
+  users:       ['admin'],
+  workflow:    ['admin'],
+  statusConfig:['admin'],
 };
 function canAccessView(view){ return !!(currentUser && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role)); }
 // Leads visible to the signed-in user: Admin/Manager see everything,
@@ -292,7 +300,7 @@ function visibleLeads(){
 
 // ---- Workflow config -------------------------------------------------------
 // Which role must approve each gated stage transition (see wireDetailTabEvents'
-// advance-btn handler). Admin-editable on the Masters page ("Workflow Config").
+// advance-btn handler). Admin-editable on the "Workflow Config" nav module.
 const DEFAULT_WORKFLOW_CONFIG = [
   { key:'negotiation', label:'Approve entry into Negotiation', minRole:'manager' },
   { key:'closed',      label:'Approve Closing (Acquired)',     minRole:'admin' },
@@ -373,7 +381,7 @@ function seedMaster(key){
 // Demo-mode passwords below are plaintext for offline preview only; a live
 // Firestore project uses real Firebase Authentication instead.
 const DEFAULT_USERS_SEED = [
-  { uid:'seed-admin',   name:'Admin User', email:'admin@demo.local',   phone:'', role:'admin',     password:'admin123',   active:true },
+  { uid:'seed-admin',   name:'Saravanan', email:'Saravanan@mpdevelopers.com', phone:'', role:'admin', password:'123456', active:true },
   { uid:'seed-manager', name:'Land Manager', email:'manager@demo.local', phone:'', role:'manager',  password:'manager123', active:true },
   { uid:'seed-karthik', name:'Karthik R',  email:'karthik@demo.local', phone:'', role:'executive', password:'exec123',    active:true },
   { uid:'seed-divya',   name:'Divya S',    email:'divya@demo.local',   phone:'', role:'executive', password:'exec123',    active:true },
@@ -742,7 +750,7 @@ function initAuth(){
           enterApp();
         } else {
           await firebase.auth().signOut();
-          showLoginScreen('Your account isn\'t set up for access yet. Ask your admin to add you under Masters → Users & Access.');
+          showLoginScreen('Your account isn\'t set up for access yet. Ask your admin to add you under Manage Users.');
         }
       }catch(err){
         console.error('Could not load your user profile.', err);
@@ -780,6 +788,8 @@ function applyRoleVisibility(){
     const allowed = VIEW_ACCESS[b.dataset.view] ? VIEW_ACCESS[b.dataset.view].includes(currentUser.role) : true;
     b.style.display = allowed ? '' : 'none';
   });
+  const adminLabel = document.getElementById('admin-nav-label');
+  if(adminLabel) adminLabel.style.display = currentUser.role==='admin' ? '' : 'none';
 }
 
 function renderUserInfo(){
@@ -811,7 +821,7 @@ function showLoginScreen(errorMsg){
         <button class="btn btn-teal" id="auth-login-btn">Sign In</button>
         <div style="text-align:center;margin-top:14px;font-size:12px;"><a href="#" id="auth-forgot" style="color:var(--teal);">Forgot password?</a></div>
         <div style="text-align:center;margin-top:8px;font-size:12px;"><a href="#" id="auth-bootstrap-link" style="color:var(--muted);">Setting this up for the first time? Create the admin account</a></div>
-        ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>admin@demo.local</b> / admin123 (Admin), <b>manager@demo.local</b> / manager123 (Manager), or <b>karthik@demo.local</b> / exec123 (Executive).</p>` : ''}
+        ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>Saravanan@mpdevelopers.com</b> / 123456 (Admin), <b>manager@demo.local</b> / manager123 (Manager), or <b>karthik@demo.local</b> / exec123 (Executive).</p>` : ''}
       </div>
     </div>`;
   document.getElementById('auth-login-btn').onclick = async () => {
@@ -906,6 +916,9 @@ function render(){
   else if(currentView==='reports') root.innerHTML = renderReports();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
+  else if(currentView==='users') root.innerHTML = renderUsersView();
+  else if(currentView==='workflow') root.innerHTML = renderWorkflowView();
+  else if(currentView==='statusConfig') root.innerHTML = renderStatusConfigView();
   wireViewEvents();
 
   const wantedHash = '#' + currentView;
@@ -1382,21 +1395,11 @@ function wireListEvents(){
 }
 
 // ---- MASTERS -------------------------------------------------------------
-const STAGES_MASTER_KEY = '__stages__';
-const WORKFLOW_MASTER_KEY = '__workflow__';
-const USERS_MASTER_KEY = '__users__';
-// Extra dropdown options appended after the regular MASTER_DEFS ones, shared
-// by every branch of the Masters page so the select always shows all of them.
-function extraMasterOptions(selectedKey){
-  const opt = (key, label) => `<option value="${key}" ${key===selectedKey?'selected':''}>${label}</option>`;
-  return opt(STAGES_MASTER_KEY,'Status Config') + opt(WORKFLOW_MASTER_KEY,'Workflow Config') + opt(USERS_MASTER_KEY,'Users &amp; Access');
-}
-
+// Plain reference-data masters (lead sources, channel partners, villages,
+// land classes, drop/hold reasons). Manage Users, Workflow Config and
+// Status Config are their own standalone nav modules below, not tucked
+// into this dropdown — simpler to find and less to scroll past.
 function renderMasters(){
-  if(currentMasterKey === STAGES_MASTER_KEY) return renderStagesMaster();
-  if(currentMasterKey === WORKFLOW_MASTER_KEY) return renderWorkflowMaster();
-  if(currentMasterKey === USERS_MASTER_KEY) return renderUsersMaster();
-
   const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
   const items = DB.getAllMasters(def.key);
   const rows = items.map(it=>`<tr>
@@ -1418,7 +1421,6 @@ function renderMasters(){
       <div class="form-grid">
         <div><label>Master Table</label><select id="master-select">
           ${MASTER_DEFS.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
-          ${extraMasterOptions(null)}
         </select></div>
       </div>
       <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
@@ -1442,188 +1444,12 @@ function renderMasters(){
   `;
 }
 
-// Stages is a special "master": the seven pipeline stages are structurally
-// fixed (workflow rules refer to specific stage keys, and every lead's
-// history refers to them), so this only lets Sara rename each stage and
-// adjust its SLA (days) — no add/delete/reorder, unlike the other masters.
-function renderStagesMaster(){
-  const rows = STAGES.map((s,i)=>`<tr>
-      <td>${s.key}</td>
-      <td><input type="text" id="stg-label-${i}" value="${s.label}"></td>
-      <td><input type="number" id="stg-sla-${i}" value="${s.sla==null?'':s.sla}" placeholder="none" style="max-width:100px;"></td>
-    </tr>`).join('');
-  return `
-    <div class="page-header"><h1>Masters</h1></div>
-    <div class="card filter-panel">
-      <div class="form-grid">
-        <div><label>Master Table</label><select id="master-select">
-          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
-          ${extraMasterOptions(STAGES_MASTER_KEY)}
-        </select></div>
-      </div>
-      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
-    </div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">The stage sequence itself is fixed by the workflow rules (approvals, SLA ageing, lead history all refer to it) — you can rename each stage and adjust its SLA, but stages can't be added, removed, or reordered here.</p>
-    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
-      <table>
-        <tr><th>Key</th><th>Label</th><th>SLA (days)</th></tr>
-        ${rows}
-      </table>
-    </div>
-    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="stages-save">Save Stages</button></div>
-  `;
-}
-
-// Workflow Config: which role must approve each gated stage transition.
-function renderWorkflowMaster(){
-  const rows = WORKFLOW_CONFIG.map((w,i)=>`<tr>
-      <td>${w.label}</td>
-      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.minRole===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
-    </tr>`).join('');
-  return `
-    <div class="page-header"><h1>Masters</h1></div>
-    <div class="card filter-panel">
-      <div class="form-grid">
-        <div><label>Master Table</label><select id="master-select">
-          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
-          ${extraMasterOptions(WORKFLOW_MASTER_KEY)}
-        </select></div>
-      </div>
-      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
-    </div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve each gated stage transition — see a lead's Stage &amp; Actions section under Progress Details.</p>
-    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
-      <table><tr><th>Transition</th><th>Minimum Approver Role</th></tr>${rows}</table>
-    </div>
-    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Save Workflow Config</button></div>
-  `;
-}
-
-// Users & Access: replaces the old free-text "Executives" master with real
-// accounts. Live mode creates a genuine Firebase Authentication sign-in;
-// demo mode creates an in-memory mock login (see DB.createUser).
-function renderUsersMaster(){
-  const items = DB.getAllUsers();
-  const editing = editingMasterId ? items.find(u=>u.uid===editingMasterId) : null;
-  const rows = items.map(u=>`<tr>
-      <td>${u.name}</td><td>${u.email}</td><td>${u.phone||'—'}</td>
-      <td><span class="badge badge-navy">${ROLE_LABELS[u.role]||u.role}</span></td>
-      <td>${u.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
-      <td class="master-actions">
-        <button class="icon-btn icon-ok" data-user-toggle="${u.uid}" title="${u.active!==false?'Deactivate':'Activate'}">${u.active!==false?'✓':'○'}</button>
-        <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role">✎</button>
-        <button class="icon-btn icon-del" data-user-delete="${u.uid}" title="Remove access record">🗑</button>
-      </td>
-    </tr>`).join('') || `<tr><td colspan="6" class="empty">No users yet.</td></tr>`;
-
-  return `
-    <div class="page-header"><h1>Masters</h1></div>
-    <div class="card filter-panel">
-      <div class="form-grid">
-        <div><label>Master Table</label><select id="master-select">
-          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
-          ${extraMasterOptions(USERS_MASTER_KEY)}
-        </select></div>
-      </div>
-      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
-    </div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} A user\'s role controls what they can see and, for Executives, which leads they can work on.</p>
-    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
-      <table>
-        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Actions</th></tr>
-        ${rows}
-      </table>
-    </div>
-    <div class="card">
-      <h2 class="section-title" style="margin-top:0;">${editing ? 'Edit User' : 'Add User'}</h2>
-      <div class="form-grid">
-        <div><label>Name</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
-        <div><label>Email</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
-        <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
-        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${editing&&editing.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
-        ${editing ? '' : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
-      </div>
-      ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email and password can\'t be changed here — the user can reset their password from the sign-in screen\'s "Forgot password?" link.</p>' : ''}
-      <div style="margin-top:10px;display:flex;gap:8px;">
-        <button class="btn btn-sm btn-teal" id="user-save">${editing?'Update':'Create User'}</button>
-        ${editing?'<button class="btn btn-sm btn-ghost" id="user-cancel">Cancel</button>':''}
-      </div>
-    </div>
-  `;
-}
-
 function wireMastersEvents(){
   const sel = document.getElementById('master-select');
   const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; render(); };
   const goBtn = document.getElementById('master-go');
   if(goBtn) goBtn.onclick = switchMaster;
   if(sel) sel.addEventListener('change', switchMaster);
-
-  if(currentMasterKey === STAGES_MASTER_KEY){
-    const saveBtn = document.getElementById('stages-save');
-    if(saveBtn) saveBtn.onclick = async () => {
-      const rows = STAGES.map((s,i)=>({
-        key: s.key,
-        label: (document.getElementById('stg-label-'+i).value || s.label).trim(),
-        sla: document.getElementById('stg-sla-'+i).value === '' ? null : parseInt(document.getElementById('stg-sla-'+i).value,10),
-      }));
-      await DB.saveStages(rows);
-      refreshStagesFromDB();
-      render();
-    };
-    return;
-  }
-
-  if(currentMasterKey === WORKFLOW_MASTER_KEY){
-    const saveBtn = document.getElementById('workflow-save');
-    if(saveBtn) saveBtn.onclick = async () => {
-      const rows = WORKFLOW_CONFIG.map((w,i)=>({
-        key: w.key, label: w.label, minRole: document.getElementById('wf-role-'+i).value,
-      }));
-      await DB.saveWorkflow(rows);
-      refreshWorkflowFromDB();
-      render();
-    };
-    return;
-  }
-
-  if(currentMasterKey === USERS_MASTER_KEY){
-    document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.userEdit; render(); });
-    document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleUser(b.dataset.userToggle); render(); });
-    document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick = async () => {
-      const extra = DB.isLive() ? ' Their sign-in account itself must be removed separately in the Firebase Console if you want it fully deleted.' : '';
-      if(!confirm('Remove this user\'s access record?' + extra + ' This cannot be undone.')) return;
-      await DB.deleteUser(b.dataset.userDelete);
-      if(editingMasterId===b.dataset.userDelete) editingMasterId=null;
-      render();
-    });
-    const saveBtn = document.getElementById('user-save');
-    if(saveBtn) saveBtn.onclick = async () => {
-      const name = document.getElementById('uf-name').value.trim();
-      const email = document.getElementById('uf-email').value.trim();
-      const phone = document.getElementById('uf-phone').value.trim();
-      const role = document.getElementById('uf-role').value;
-      if(!name){ alert('Name is required.'); return; }
-      if(editingMasterId){
-        await DB.updateUser(editingMasterId, { name, phone, role });
-        editingMasterId = null;
-      } else {
-        const password = document.getElementById('uf-password').value;
-        if(!email){ alert('Email is required.'); return; }
-        if(!password || password.length < 6){ alert('Password must be at least 6 characters.'); return; }
-        try{
-          await DB.createUser({ name, email, phone, role, password });
-        }catch(err){
-          alert('Could not create user: ' + friendlyAuthError(err));
-          return;
-        }
-      }
-      render();
-    };
-    const cancelBtn = document.getElementById('user-cancel');
-    if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
-    return;
-  }
 
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.edit; render(); });
   document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleMaster(currentMasterKey, b.dataset.toggle); render(); });
@@ -1652,6 +1478,155 @@ function wireMastersEvents(){
   };
   const cancelBtn = document.getElementById('master-cancel');
   if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
+}
+
+// ---- MANAGE USERS (own module — was folded into Masters, now standalone) --
+// Real accounts (Firebase Authentication when live) replace the old
+// free-text "Executives" master. Each user has a role — see ROLES above —
+// that governs which pages they can see and, for Executives, which leads.
+function renderUsersView(){
+  const items = DB.getAllUsers();
+  const editing = editingMasterId ? items.find(u=>u.uid===editingMasterId) : null;
+  const rows = items.map(u=>`<tr>
+      <td>${u.name}</td><td>${u.email}</td><td>${u.phone||'—'}</td>
+      <td><span class="badge badge-navy">${ROLE_LABELS[u.role]||u.role}</span></td>
+      <td>${u.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-user-toggle="${u.uid}" title="${u.active!==false?'Deactivate':'Activate'}">${u.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role">✎</button>
+        <button class="icon-btn icon-del" data-user-delete="${u.uid}" title="Remove access record">🗑</button>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="6" class="empty">No users yet.</td></tr>`;
+
+  return `
+    <div class="page-header"><h1>Manage Users</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} A user\'s role controls what they can see and, for Executives, which leads they can work on.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing ? 'Edit User' : 'Add User'}</h2>
+      <div class="form-grid">
+        <div><label>Name</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
+        <div><label>Email</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
+        <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
+        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${editing&&editing.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+        ${editing ? '' : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
+      </div>
+      ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email and password can\'t be changed here — the user can reset their password from the sign-in screen\'s "Forgot password?" link.</p>' : ''}
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="user-save">${editing?'Update':'Create User'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="user-cancel">Cancel</button>':''}
+      </div>
+    </div>
+  `;
+}
+
+function wireUsersEvents(){
+  document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.userEdit; render(); });
+  document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleUser(b.dataset.userToggle); render(); });
+  document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick = async () => {
+    const extra = DB.isLive() ? ' Their sign-in account itself must be removed separately in the Firebase Console if you want it fully deleted.' : '';
+    if(!confirm('Remove this user\'s access record?' + extra + ' This cannot be undone.')) return;
+    await DB.deleteUser(b.dataset.userDelete);
+    if(editingMasterId===b.dataset.userDelete) editingMasterId=null;
+    render();
+  });
+  const saveBtn = document.getElementById('user-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const name = document.getElementById('uf-name').value.trim();
+    const email = document.getElementById('uf-email').value.trim();
+    const phone = document.getElementById('uf-phone').value.trim();
+    const role = document.getElementById('uf-role').value;
+    if(!name){ alert('Name is required.'); return; }
+    if(editingMasterId){
+      await DB.updateUser(editingMasterId, { name, phone, role });
+      editingMasterId = null;
+    } else {
+      const password = document.getElementById('uf-password').value;
+      if(!email){ alert('Email is required.'); return; }
+      if(!password || password.length < 6){ alert('Password must be at least 6 characters.'); return; }
+      try{
+        await DB.createUser({ name, email, phone, role, password });
+      }catch(err){
+        alert('Could not create user: ' + friendlyAuthError(err));
+        return;
+      }
+    }
+    render();
+  };
+  const cancelBtn = document.getElementById('user-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
+}
+
+// ---- WORKFLOW CONFIG (own module) -----------------------------------------
+// Which role must approve each gated stage transition.
+function renderWorkflowView(){
+  const rows = WORKFLOW_CONFIG.map((w,i)=>`<tr>
+      <td>${w.label}</td>
+      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.minRole===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
+    </tr>`).join('');
+  return `
+    <div class="page-header"><h1>Workflow Config</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve each gated stage transition — see a lead's Stage &amp; Actions section under Progress Details.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table><tr><th>Transition</th><th>Minimum Approver Role</th></tr>${rows}</table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Save Workflow Config</button></div>
+  `;
+}
+
+function wireWorkflowEvents(){
+  const saveBtn = document.getElementById('workflow-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const rows = WORKFLOW_CONFIG.map((w,i)=>({
+      key: w.key, label: w.label, minRole: document.getElementById('wf-role-'+i).value,
+    }));
+    await DB.saveWorkflow(rows);
+    refreshWorkflowFromDB();
+    render();
+  };
+}
+
+// ---- STATUS CONFIG (own module) --------------------------------------------
+// The seven pipeline stages are structurally fixed (workflow rules refer to
+// specific stage keys, and every lead's history refers to them), so this
+// only lets Sara rename each stage and adjust its SLA (days) — no
+// add/delete/reorder, unlike the plain Masters.
+function renderStatusConfigView(){
+  const rows = STAGES.map((s,i)=>`<tr>
+      <td>${s.key}</td>
+      <td><input type="text" id="stg-label-${i}" value="${s.label}"></td>
+      <td><input type="number" id="stg-sla-${i}" value="${s.sla==null?'':s.sla}" placeholder="none" style="max-width:100px;"></td>
+    </tr>`).join('');
+  return `
+    <div class="page-header"><h1>Status Config</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">The stage sequence itself is fixed by the workflow rules (approvals, SLA ageing, lead history all refer to it) — you can rename each stage and adjust its SLA, but stages can't be added, removed, or reordered here.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Key</th><th>Label</th><th>SLA (days)</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="stages-save">Save Status Config</button></div>
+  `;
+}
+
+function wireStatusConfigEvents(){
+  const saveBtn = document.getElementById('stages-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const rows = STAGES.map((s,i)=>({
+      key: s.key,
+      label: (document.getElementById('stg-label-'+i).value || s.label).trim(),
+      sla: document.getElementById('stg-sla-'+i).value === '' ? null : parseInt(document.getElementById('stg-sla-'+i).value,10),
+    }));
+    await DB.saveStages(rows);
+    refreshStagesFromDB();
+    render();
+  };
 }
 
 // ---- CONFIGURE (Lead Field Configuration) ---------------------------------
@@ -1925,7 +1900,7 @@ function renderStageTab(l){
         <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
       </div>
       <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Move to ${next.label}</button>
-      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('negotiation')]} or higher can approve this transition (see Masters → Workflow Config).</p>`}
+      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('negotiation')]} or higher can approve this transition (see Workflow Config).</p>`}
     </fieldset>`;
   } else if(next && next.key==='closed'){
     const canApprove = !currentUser || roleMeetsGate(currentUser.role, 'closed');
@@ -1938,7 +1913,7 @@ function renderStageTab(l){
         <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
       </div>
       <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Close as Acquired</button>
-      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('closed')]} or higher can approve this transition (see Masters → Workflow Config).</p>`}
+      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('closed')]} or higher can approve this transition (see Workflow Config).</p>`}
     </fieldset>`;
   } else if(next){
     gateBlock = `<div style="margin-bottom:14px;"><button class="btn btn-sm btn-teal" id="advance-btn">Move to ${next.label}</button>
@@ -2155,6 +2130,9 @@ function wireViewEvents(){
   if(currentView==='reports'){ wireReportsEvents(); }
   if(currentView==='configure'){ wireConfigureEvents(); }
   if(currentView==='masters'){ wireMastersEvents(); }
+  if(currentView==='users'){ wireUsersEvents(); }
+  if(currentView==='workflow'){ wireWorkflowEvents(); }
+  if(currentView==='statusConfig'){ wireStatusConfigEvents(); }
 }
 
 // ---- Sidebar navigation ---------------------------------------------------
