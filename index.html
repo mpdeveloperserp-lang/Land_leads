@@ -186,7 +186,7 @@
       <button data-view="reports">Reports</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
-      <div class="nav-group-label" id="admin-nav-label">Admin</div>
+      <div class="nav-group-label" id="admin-nav-label">Head</div>
       <button data-view="users">Manage Users</button>
       <button data-view="workflow">Workflow Config</button>
       <button data-view="statusConfig">Status Config</button>
@@ -270,11 +270,16 @@ const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
-// Admin: full access. Manager: all leads/progress + can approve workflow
-// gates, no Masters/Configure. Executive: only their own assigned leads —
-// lead data & progress only, nothing else. See the "Manage Users" nav module.
+// Head (internal role key stays 'admin' for backward compatibility with
+// already-deployed accounts/data — only the display label changed, see
+// ROLE_LABELS): full system access (Masters/Configure/Manage Users/Workflow
+// Config/Status Config) plus workflow-gate approval at the top of the chain.
+// Manager: all lead pages + can approve workflow gates, no Masters/Configure.
+// Executive: only their own assigned leads. See the "Manage Users" nav
+// module — every Manager/Head is assigned who they are the "Reports To"
+// for, which drives the lead-visibility tree below.
 const ROLES = ['admin','manager','executive'];
-const ROLE_LABELS = { admin:'Admin', manager:'Manager', executive:'Executive' };
+const ROLE_LABELS = { admin:'Head', manager:'Manager', executive:'Executive' };
 const ROLE_RANK = { executive:1, manager:2, admin:3 };
 const VIEW_ACCESS = {
   dashboard: ['admin','manager','executive'],
@@ -288,11 +293,50 @@ const VIEW_ACCESS = {
   statusConfig:['admin'],
 };
 function canAccessView(view){ return !!(currentUser && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role)); }
-// Leads visible to the signed-in user: Admin/Manager see everything,
-// Executive sees only leads assigned to them.
+// ---- Lead visibility tree -------------------------------------------------
+// Leads >> Created & viewed by the Executive assigned to them >> viewed &
+// edited by that Executive's Manager (via the Executive's "Reports To") >>
+// viewed & edited by that Manager's Head (via the Manager's "Reports To").
+// Each Manager/Head sees only their own branch, not the whole company —
+// set each person's "Reports To" under Manage Users to place them in the
+// tree. A lead's Assigned Executive is matched by name against a real user
+// account (same convention the old flat executive-only filter already used).
+function userByName(name){ return (DB.getUsers()||[]).find(u=>u.name===name); }
+function userByUid(uidVal){ return (DB.getUsers()||[]).find(u=>u.uid===uidVal); }
+function isDirectReport(managerUid, execName){
+  const exec = userByName(execName);
+  return !!(exec && exec.reportsTo === managerUid);
+}
+function isInHeadBranch(headUid, execName){
+  const exec = userByName(execName);
+  if(!exec || !exec.reportsTo) return false;
+  const mgr = userByUid(exec.reportsTo);
+  return !!(mgr && mgr.reportsTo === headUid);
+}
 function visibleLeads(){
   const all = DB.getLeads();
-  if(currentUser && currentUser.role==='executive') return all.filter(l=>l.assignedExecutive===currentUser.name);
+  if(!currentUser) return [];
+  if(currentUser.role==='executive') return all.filter(l=>l.assignedExecutive===currentUser.name);
+  if(currentUser.role==='manager') return all.filter(l=>isDirectReport(currentUser.uid, l.assignedExecutive));
+  if(currentUser.role==='admin'){
+    return all.filter(l => isInHeadBranch(currentUser.uid, l.assignedExecutive)
+      // Safety net: a lead whose Assigned Executive doesn't match any real
+      // user account (legacy data, unassigned, or the reporting tree not
+      // set up yet) has nowhere else to surface — Head still sees these so
+      // nothing goes silently missing while the hierarchy is configured.
+      || !userByName(l.assignedExecutive));
+  }
+  return all;
+}
+// Same tree, applied to the Executive accounts themselves — used to scope
+// the "Assigned Executive" dropdown/filter on New Lead, Progress Details
+// and All Leads so a Manager/Head only sees executives in their own branch.
+function visibleExecutives(){
+  const all = DB.getUsers().filter(u=>u.role==='executive');
+  if(!currentUser) return [];
+  if(currentUser.role==='executive') return all.filter(u=>u.name===currentUser.name);
+  if(currentUser.role==='manager') return all.filter(u=>isDirectReport(currentUser.uid, u.name));
+  if(currentUser.role==='admin') return all.filter(u=>isInHeadBranch(currentUser.uid, u.name) || !u.reportsTo);
   return all;
 }
 
@@ -408,10 +452,10 @@ function seedMaster(key){
 // Demo-mode passwords below are plaintext for offline preview only; a live
 // Firestore project uses real Firebase Authentication instead.
 const DEFAULT_USERS_SEED = [
-  { uid:'seed-admin',   name:'Saravanan', email:'Saravanan@mpdevelopers.com', phone:'', role:'admin', password:'123456', active:true },
-  { uid:'seed-manager', name:'Land Manager', email:'manager@demo.local', phone:'', role:'manager',  password:'manager123', active:true },
-  { uid:'seed-karthik', name:'Karthik R',  email:'karthik@demo.local', phone:'', role:'executive', password:'exec123',    active:true },
-  { uid:'seed-divya',   name:'Divya S',    email:'divya@demo.local',   phone:'', role:'executive', password:'exec123',    active:true },
+  { uid:'seed-admin',   name:'Saravanan', email:'Saravanan@mpdevelopers.com', phone:'', role:'admin', password:'123456', active:true, reportsTo:'' },
+  { uid:'seed-manager', name:'Land Manager', email:'manager@demo.local', phone:'', role:'manager',  password:'manager123', active:true, reportsTo:'seed-admin' },
+  { uid:'seed-karthik', name:'Karthik R',  email:'karthik@demo.local', phone:'', role:'executive', password:'exec123',    active:true, reportsTo:'seed-manager' },
+  { uid:'seed-divya',   name:'Divya S',    email:'divya@demo.local',   phone:'', role:'executive', password:'exec123',    active:true, reportsTo:'seed-manager' },
 ];
 
 const fmtINR = n => n==null||isNaN(n) ? '—' : '₹' + Math.round(n).toLocaleString('en-IN');
@@ -515,11 +559,11 @@ class MemoryDB {
     return Object.assign({}, user);
   }
   async logout(){ /* no-op — demo mode holds no session */ }
-  async createUser({name, email, phone, role, password}){
+  async createUser({name, email, phone, role, password, reportsTo}){
     const e = (email||'').trim().toLowerCase();
     if(this.users.find(u=>u.email.toLowerCase()===e)) throw new Error('A user with that email already exists.');
     const newUid = uid('USR');
-    const newUser = { id:newUid, uid:newUid, name, email:(email||'').trim(), phone: phone||'', role, password, active:true };
+    const newUser = { id:newUid, uid:newUid, name, email:(email||'').trim(), phone: phone||'', role, password, active:true, reportsTo: reportsTo||'' };
     this.users.push(newUser);
     return Object.assign({}, newUser);
   }
@@ -676,13 +720,13 @@ class FirestoreDB {
   // Creates the new account on a SECONDARY Firebase app instance so the
   // admin creating it stays signed in on the primary app — the standard
   // client-side workaround for admin-created users without a backend.
-  async createUser({name, email, phone, role, password}){
+  async createUser({name, email, phone, role, password, reportsTo}){
     const secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, 'Secondary-' + Date.now());
     try{
       const cred = await secondaryApp.auth().createUserWithEmailAndPassword((email||'').trim(), password);
       const newUid = cred.user.uid;
       await secondaryApp.auth().signOut();
-      const doc = { name, email:(email||'').trim(), phone: phone||'', role, active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+      const doc = { name, email:(email||'').trim(), phone: phone||'', role, active:true, reportsTo: reportsTo||'', createdAt: firebase.firestore.FieldValue.serverTimestamp() };
       await this.fsdb.collection('m_users').doc(newUid).set(doc);
       return Object.assign({ uid:newUid, id:newUid }, doc);
     } finally {
@@ -1235,7 +1279,7 @@ function exportRowsPDF(rows, filename, title){
   }
 }
 function leadsReportRows(){
-  return DB.getLeads().map(l=>({
+  return visibleLeads().map(l=>({
     'Lead ID': l.leadId, Village: l.village||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
     'Channel Partner': l.channelPartnerCode||'', Executive: l.assignedExecutive||'',
     'Lead Date': (l.leadSourceDateTime||'').slice(0,10), 'On Hold': (l.onHold&&l.onHold.active)?'Yes':'No', Outcome: l.outcome||''
@@ -1243,7 +1287,7 @@ function leadsReportRows(){
 }
 function siteVisitReportRows(){
   const rows = [];
-  DB.getLeads().forEach(l=>{
+  visibleLeads().forEach(l=>{
     (l.stageHistory||[]).forEach(h=>{
       if(h.stage==='site_visited') rows.push({
         'Lead ID': l.leadId, Village: l.village||'', 'Visited On': (h.at||'').slice(0,10),
@@ -1257,7 +1301,7 @@ function siteVisitReportRows(){
 
 // ---- REPORTS ---------------------------------------------------------------
 function renderReports(){
-  const leads = DB.getLeads();
+  const leads = visibleLeads();
   const visits = siteVisitReportRows();
 
   const leadsRows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
@@ -1304,7 +1348,7 @@ function wireReportsEvents(){
 function renderProgress(){
   const sources = DB.getMasters('leadSources');
   const cps = DB.getMasters('channelPartners');
-  const execs = DB.getUsers();
+  const execs = visibleExecutives();
   const activeFilters = Object.assign({}, DEFAULT_FILTERS, progressFilters);
   const leads = visibleLeads().filter(l=>leadMatchesFilters(l, activeFilters));
 
@@ -1367,7 +1411,7 @@ function wireProgressEvents(){
 function renderList(){
   const sources = DB.getMasters('leadSources');
   const cps = DB.getMasters('channelPartners');
-  const execs = DB.getUsers();
+  const execs = visibleExecutives();
   const fcfg = fieldConfigMap();
   const allLeads = visibleLeads();
   const filtered = allLeads.filter(l=>leadMatchesFilters(l, listFilters));
@@ -1604,26 +1648,47 @@ function wireMastersEvents(){
 // Real accounts (Firebase Authentication when live) replace the old
 // free-text "Executives" master. Each user has a role — see ROLES above —
 // that governs which pages they can see and, for Executives, which leads.
+// A Manager's "Reports To" offers Heads; an Executive's offers Managers;
+// a Head (role 'admin') has no Reports To — they're the top of their branch.
+function reportsToCandidates(role){
+  const items = DB.getAllUsers();
+  if(role==='executive') return items.filter(u=>u.role==='manager' && u.active!==false);
+  if(role==='manager') return items.filter(u=>u.role==='admin' && u.active!==false);
+  return [];
+}
+function reportsToOptionsHtml(role, selectedUid){
+  const list = reportsToCandidates(role);
+  const empty = list.length ? '— unassigned —' : '— none available yet, add one first —';
+  return `<option value="">${empty}</option>` + list.map(u=>`<option value="${u.uid}" ${selectedUid===u.uid?'selected':''}>${u.name}</option>`).join('');
+}
+
 function renderUsersView(){
   const items = DB.getAllUsers();
   const editing = editingMasterId ? items.find(u=>u.uid===editingMasterId) : null;
-  const rows = items.map(u=>`<tr>
+  const rows = items.map(u=>{
+    const mgr = u.reportsTo ? items.find(x=>x.uid===u.reportsTo) : null;
+    return `<tr>
       <td>${u.name}</td><td>${u.email}</td><td>${u.phone||'—'}</td>
       <td><span class="badge badge-navy">${ROLE_LABELS[u.role]||u.role}</span></td>
+      <td>${mgr ? mgr.name : '—'}</td>
       <td>${u.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
       <td class="master-actions">
         <button class="icon-btn icon-ok" data-user-toggle="${u.uid}" title="${u.active!==false?'Deactivate':'Activate'}">${u.active!==false?'✓':'○'}</button>
-        <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role">✎</button>
+        <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role/reports-to">✎</button>
         <button class="icon-btn icon-del" data-user-delete="${u.uid}" title="Remove access record">🗑</button>
       </td>
-    </tr>`).join('') || `<tr><td colspan="6" class="empty">No users yet.</td></tr>`;
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="empty">No users yet.</td></tr>`;
+
+  const roleForForm = editing ? editing.role : ROLES[0];
+  const reportsToHidden = roleForForm==='admin';
 
   return `
     <div class="page-header"><h1>Manage Users</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} A user\'s role controls what they can see and, for Executives, which leads they can work on.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} A user's role controls what they can see. "Reports To" places them in the lead-visibility tree: Executive → Manager → Head — a Manager/Head sees and edits only the leads of the Executives/Managers who report to them, not the whole company.</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Reports To</th><th>Status</th><th>Actions</th></tr>
         ${rows}
       </table>
     </div>
@@ -1633,7 +1698,8 @@ function renderUsersView(){
         <div><label>Name</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
         <div><label>Email</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
         <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
-        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${editing&&editing.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+        <div id="uf-reports-to-wrap" ${reportsToHidden ? 'style="display:none;"' : ''}><label>Reports To</label><select id="uf-reports-to">${reportsToOptionsHtml(roleForForm, editing?editing.reportsTo:'')}</select></div>
         ${editing ? '' : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
       </div>
       ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email and password can\'t be changed here — the user can reset their password from the sign-in screen\'s "Forgot password?" link.</p>' : ''}
@@ -1655,22 +1721,35 @@ function wireUsersEvents(){
     if(editingMasterId===b.dataset.userDelete) editingMasterId=null;
     render();
   });
+  const roleSelect = document.getElementById('uf-role');
+  if(roleSelect) roleSelect.onchange = () => {
+    const role = roleSelect.value;
+    const wrap = document.getElementById('uf-reports-to-wrap');
+    const sel = document.getElementById('uf-reports-to');
+    if(role==='admin'){
+      wrap.style.display = 'none';
+    } else {
+      wrap.style.display = '';
+      sel.innerHTML = reportsToOptionsHtml(role, '');
+    }
+  };
   const saveBtn = document.getElementById('user-save');
   if(saveBtn) saveBtn.onclick = async () => {
     const name = document.getElementById('uf-name').value.trim();
     const email = document.getElementById('uf-email').value.trim();
     const phone = document.getElementById('uf-phone').value.trim();
     const role = document.getElementById('uf-role').value;
+    const reportsTo = role==='admin' ? '' : (document.getElementById('uf-reports-to')?.value || '');
     if(!name){ alert('Name is required.'); return; }
     if(editingMasterId){
-      await DB.updateUser(editingMasterId, { name, phone, role });
+      await DB.updateUser(editingMasterId, { name, phone, role, reportsTo });
       editingMasterId = null;
     } else {
       const password = document.getElementById('uf-password').value;
       if(!email){ alert('Email is required.'); return; }
       if(!password || password.length < 6){ alert('Password must be at least 6 characters.'); return; }
       try{
-        await DB.createUser({ name, email, phone, role, password });
+        await DB.createUser({ name, email, phone, role, password, reportsTo });
       }catch(err){
         alert('Could not create user: ' + friendlyAuthError(err));
         return;
@@ -1821,7 +1900,7 @@ function openNewLeadModal(){
   const cps = DB.getMasters('channelPartners');
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
-  const execs = DB.getUsers();
+  const execs = visibleExecutives();
 
   const html = `
     <div class="modal-overlay" id="overlay">
@@ -1954,8 +2033,11 @@ function openNewLeadModal(){
 // ---- MODAL: Lead Detail --------------------------------------------------
 function openLeadDetail(id){
   const l = DB.getLead(id);
-  if(currentUser && currentUser.role==='executive' && l && l.assignedExecutive !== currentUser.name){
-    alert('This lead isn\'t assigned to you.'); return;
+  // Guards every role uniformly against opening a lead outside their branch
+  // of the visibility tree (not just Executives) — belt-and-suspenders in
+  // case a lead is ever reachable outside an already-filtered list.
+  if(currentUser && l && !visibleLeads().some(v=>v.id===id)){
+    alert('This lead is outside the leads you can access.'); return;
   }
   currentDetailLeadId = id;
   renderDetailModal(id);
