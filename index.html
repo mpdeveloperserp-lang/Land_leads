@@ -172,7 +172,6 @@
       <button data-view="reports">Reports</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
-      <button data-view="setup">Connect to Firebase</button>
     </nav>
     <div class="sidebar-foot" id="conn-badge"></div>
   </aside>
@@ -209,7 +208,7 @@
 // Replace with the config object from Firebase Console → Project Settings →
 // General → Your apps → SDK setup and configuration. Client-side Firebase
 // config is not a secret — access is controlled by your Firestore/Storage
-// security rules (see the "Connect to Firebase" tab), not by hiding this.
+// security rules (in the Firebase Console), not by hiding this.
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyAe_9Y00TN7NfggpYELdQulpXgCUW7CwZ0",
   authDomain: "mp-land-leads.firebaseapp.com",
@@ -249,7 +248,8 @@ function refreshStagesFromDB(){
 }
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', setup:'Connect to Firebase' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters' };
+const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Lead field configuration (drives the New Lead form + list filters) ----
 // Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
@@ -533,13 +533,13 @@ function showConnectionBadge(live, note){
   if(!el) return;
   el.innerHTML = live
     ? '<span class="badge badge-ok conn-dot">● Firebase Connected</span>'
-    : '<span class="badge badge-warn conn-dot" title="'+(note?String(note).replace(/"/g,'\''):'Add your Firebase config — see the Connect to Firebase tab.')+'">● Demo Mode</span>';
+    : '<span class="badge badge-warn conn-dot" title="'+(note?String(note).replace(/"/g,'\''):'Add your Firebase config near the top of this file.')+'">● Demo Mode</span>';
 }
 
 function renderDemoBanner(show, note){
   const holder = document.getElementById('banner-holder');
   if(!show){ holder.innerHTML=''; return; }
-  holder.innerHTML = `<div class="banner"><div><b>Running in demo mode</b> — data is in-memory and resets on refresh.${note?(' ('+note+')'):''} Open the "Connect to Firebase" page to make this persistent with your own project.</div><button id="banner-x">&times;</button></div>`;
+  holder.innerHTML = `<div class="banner"><div><b>Running in demo mode</b> — data is in-memory and resets on refresh.${note?(' ('+note+')'):''} Check your FIREBASE_CONFIG and Firestore/Storage rules to make this persistent again.</div><button id="banner-x">&times;</button></div>`;
   const x = document.getElementById('banner-x');
   if(x) x.onclick = () => { holder.innerHTML=''; };
 }
@@ -579,7 +579,7 @@ async function boot(){
   }
   document.getElementById('footer-note').textContent = DB.isLive()
     ? 'Connected to Firebase — leads, masters, and documents are persisted live.'
-    : 'Demo mode — see the "Connect to Firebase" page to wire this to your own Firestore project.';
+    : 'Demo mode — check your FIREBASE_CONFIG to wire this to your own Firestore project.';
   refreshStagesFromDB();
   render();
 }
@@ -596,6 +596,12 @@ let editingMasterId = null;
 // Progress Details is one page with its own Status/Source/Channel
 // Partner/Executive/Date filter panel and a single results table.
 let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' };
+// ---- Browser Back/Forward support ------------------------------------
+// Every top-level view change pushes a history entry (#dashboard, #list, …)
+// so the browser's Back button steps back through in-app pages instead of
+// leaving the app entirely. suppressHistoryPush prevents the popstate
+// handler's own render() call from pushing a duplicate entry.
+let suppressHistoryPush = false;
 
 function render(){
   document.querySelectorAll('#tabs > button[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===currentView));
@@ -607,8 +613,14 @@ function render(){
   else if(currentView==='reports') root.innerHTML = renderReports();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
-  else if(currentView==='setup') root.innerHTML = renderSetup();
   wireViewEvents();
+
+  const wantedHash = '#' + currentView;
+  if(suppressHistoryPush){
+    suppressHistoryPush = false;
+  } else if(location.hash !== wantedHash){
+    history.pushState({ view: currentView }, '', wantedHash);
+  }
 }
 
 // ---- Navigation helpers ---------------------------------------------------
@@ -941,18 +953,17 @@ function renderList(){
   const letters = ['ALL', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')];
 
   const rows = pageItems.map(l=>{
-    const call = callBadgeInfo(l);
     const checked = selectedLeadIds.has(l.id) ? 'checked' : '';
     return `<tr>
       <td><input type="checkbox" class="row-check" data-id="${l.id}" ${checked}></td>
       <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
       <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
-      <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span>${l.onHold&&l.onHold.active?' <span class="badge badge-warn">Hold</span>':''}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.surveyNumber||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
+      <td class="clickable-row" data-id="${l.id}">${l.landownerName||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
-      <td class="clickable-row" data-id="${l.id}">${call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—'}</td>
       <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
     </tr>`;
   }).join('') || `<tr><td colspan="10" class="empty">No leads match these filters</td></tr>`;
@@ -965,9 +976,6 @@ function renderList(){
 
     <div class="card filter-panel">
       <div class="form-grid">
-        <div><label>Status</label><select id="lf-stage">
-          <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
-        </select></div>
         ${(!fcfg.leadSource || fcfg.leadSource.filter!==false) ? `<div><label>Lead Source</label><select id="lf-source">
           <option value="">All sources</option>${sources.map(s=>`<option value="${s.label}" ${listFilters.source===s.label?'selected':''}>${s.label}</option>`).join('')}
         </select></div>` : ''}
@@ -1000,7 +1008,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Stage</th><th>Extent</th><th>Quoted Price</th><th>Source</th><th>Executive</th><th>Next Call</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Survey No.</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Executive</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -1022,7 +1030,6 @@ function wireListEvents(){
   const val = id => (document.getElementById(id)?.value || '').trim();
   const goBtn = document.getElementById('lf-go');
   if(goBtn) goBtn.onclick = () => {
-    listFilters.stage = val('lf-stage');
     // Source/Channel Partner/Executive filters can be hidden via the Configure
     // page's Filter flag — only read them when actually rendered.
     if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
@@ -1069,10 +1076,10 @@ function wireListEvents(){
     const source = selectedLeadIds.size ? filtered.filter(l=>selectedLeadIds.has(l.id)) : filtered;
     if(!source.length){ alert('Nothing to export.'); return; }
     const rows = source.map(l=>({
-      'Lead ID': l.leadId, Village: l.village||'', Stage: stageLabel(l.stage),
+      'Lead ID': l.leadId, Village: l.village||'', 'Survey No.': l.surveyNumber||'',
       Extent: l.extentValue, 'Extent Unit': EXTENT_UNITS[l.extentUnit]?.label||'',
       Price: l.priceValue, 'Price Unit': EXTENT_UNITS[l.priceUnit]?.label||'',
-      Source: l.leadSource||'', Executive: l.assignedExecutive||'', 'Next Call': l.nextCallDate||''
+      Landowner: l.landownerName||'', Source: l.leadSource||'', Executive: l.assignedExecutive||''
     }));
     downloadBlob(toCSV(rows), 'Land_Leads_List.csv', 'text/csv;charset=utf-8;');
   };
@@ -1245,51 +1252,6 @@ function wireConfigureEvents(){
   }));
   const saveBtn = document.getElementById('cfg-save');
   if(saveBtn) saveBtn.onclick = async () => { await DB.saveFieldConfig(rows); render(); alert('Field configuration saved.'); };
-}
-
-// ---- SETUP / FIREBASE WIRING TAB ---------------------------------------
-function renderSetup(){
-  const live = DB.isLive();
-  return `
-    <div class="page-header"><h1>Connect to Firebase</h1></div>
-    <div class="card">
-      <h2 class="section-title" style="margin-top:0;">${live ? 'Connected — managing your live project' : 'Going live on Firebase'}</h2>
-      ${live ? `<p style="font-size:13.5px;line-height:1.6;">This app is currently reading and writing to your Firestore project in real time — leads, all seven masters, and (if Storage is enabled) documents. Everything below still applies if you ever move to a different project.</p>` : `
-      <p style="font-size:13.5px;line-height:1.6;">This app is fully wired for Firebase — it's just not pointed at a project yet. Three steps:</p>
-      <p style="font-size:13.5px;"><b>1. Create or reuse a Firebase project</b> (Firebase Console), enable Firestore and Storage.</p>
-      <p style="font-size:13.5px;"><b>2. Paste your config</b> into the <code>FIREBASE_CONFIG</code> object near the top of this file's script — the exact spot is commented "YOUR FIREBASE CONFIG". It looks like:</p>
-      <div class="setup-code">const FIREBASE_CONFIG = {
-  apiKey: "AIza...",
-  authDomain: "your-project.firebaseapp.com",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "...",
-  appId: "..."
-};</div>
-      <p style="font-size:13.5px;"><b>3. Reopen the file.</b> On first connect, it automatically seeds all seven master collections and a set of sample leads if they're empty, then switches the badge in the sidebar to "Firebase Connected."</p>
-      `}
-      <p style="font-size:13.5px;"><b>Security rules</b> — until Phase 2 login is built, keep this test-mode rule (open, but time-boxed) rather than leaving it permanently open:</p>
-      <div class="setup-code">rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if request.time &lt; timestamp.date(2026, 12, 31);
-    }
-  }
-}</div>
-      <p style="font-size:13.5px;">And the matching Storage rule, for document uploads:</p>
-      <div class="setup-code">rules_version = '2';
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /leads/{leadId}/{fileName} {
-      allow read, write: if request.time &lt; timestamp.date(2026, 12, 31);
-    }
-  }
-}</div>
-      <p style="font-size:12.5px;color:var(--muted);">Both expire the open access at the date shown — extend it, or replace it with real authentication, before then. Once Phase 2 login is in place, swap these for rules scoped to <code>request.auth</code>.</p>
-      <p style="font-size:12.5px;color:var(--muted);">Collections used: <code>leads</code>, plus one per master — ${MASTER_DEFS.map(m=>'<code>'+m.collection+'</code>').join(', ')}.</p>
-    </div>
-  `;
 }
 
 // ---- MODALS: New Lead ---------------------------------------------------
@@ -1581,7 +1543,7 @@ function renderDocumentsTab(l){
         <input type="text" id="doc-url" placeholder="Reference / URL">
         <button class="btn btn-sm btn-teal" id="doc-add">Add</button>
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">${DB.isLive() ? 'Enable Firebase Storage on your project to turn this into real file uploads.' : 'Connect this app to Firebase (see the Connect to Firebase page) to enable real file uploads here.'}</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">${DB.isLive() ? 'Enable Firebase Storage on your project to turn this into real file uploads.' : 'Connect this app to Firebase (see FIREBASE_CONFIG near the top of this file) to enable real file uploads here.'}</p>
     `}
   `;
 }
@@ -1756,6 +1718,22 @@ function wireSidebarNav(){
   });
 }
 wireSidebarNav();
+
+// Restore whichever view is named in the URL hash on load/refresh (deep
+// link / reload support), then normalize the history entry so the very
+// first back-press doesn't feel like a no-op.
+(function initHistory(){
+  const initial = (location.hash || '').slice(1);
+  if(KNOWN_VIEWS.includes(initial)) currentView = initial;
+  history.replaceState({ view: currentView }, '', '#' + currentView);
+  window.addEventListener('popstate', (e) => {
+    if(document.getElementById('overlay')) closeModal(); // don't leave a stale modal over a different page
+    const v = (e.state && e.state.view) || (location.hash || '').slice(1);
+    currentView = KNOWN_VIEWS.includes(v) ? v : 'dashboard';
+    suppressHistoryPush = true;
+    render();
+  });
+})();
 
 boot();
 </script>
