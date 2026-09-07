@@ -167,7 +167,6 @@
   .clickable-row:hover{cursor:pointer;}
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
   @media (max-width:820px){.two-col{grid-template-columns:1fr;} .form-grid{grid-template-columns:1fr;} .app-shell{flex-direction:column;} .sidebar{position:static;height:auto;width:100%;flex:0 0 auto;}}
-  .footer-note{text-align:left;color:var(--muted);font-size:11.5px;margin-top:28px;padding-top:14px;border-top:1px solid var(--border);}
 </style>
 </head>
 <body>
@@ -203,7 +202,6 @@
     <main>
       <div id="banner-holder"></div>
       <div id="view-root"><div class="empty">Loading…</div></div>
-      <div class="footer-note" id="footer-note"></div>
     </main>
   </div>
 </div>
@@ -300,21 +298,25 @@ function visibleLeads(){
 
 // ---- Workflow config -------------------------------------------------------
 // Which role must approve each gated stage transition (see wireDetailTabEvents'
-// advance-btn handler). Admin-editable on the "Workflow Config" nav module.
+// advance-btn handler). Admin-editable on the "Workflow Config" nav module,
+// which can gate ANY stage in STAGE_KEYS (other than "new" — nothing
+// transitions into the first stage), not just the two seeded below.
 const DEFAULT_WORKFLOW_CONFIG = [
   { key:'negotiation', label:'Approve entry into Negotiation', minRole:'manager' },
   { key:'closed',      label:'Approve Closing (Acquired)',     minRole:'admin' },
 ];
 let WORKFLOW_CONFIG = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+function defaultGateLabel(key){ return key==='closed' ? 'Approve Closing (Acquired)' : ('Approve entry into ' + stageLabel(key)); }
 function refreshWorkflowFromDB(){
   const rows = (DB && DB.getWorkflow) ? DB.getWorkflow() : null;
-  WORKFLOW_CONFIG = DEFAULT_WORKFLOW_CONFIG.map(def=>{
-    const stored = rows && rows.find(r=>r.key===def.key);
-    return { key:def.key, label:def.label, minRole: (stored && stored.minRole) || def.minRole };
-  });
+  const source = (rows && rows.length) ? rows : DEFAULT_WORKFLOW_CONFIG;
+  WORKFLOW_CONFIG = source
+    .filter(r => STAGE_KEYS.includes(r.key) && r.key !== 'new')
+    .map(r => ({ key: r.key, label: r.label || defaultGateLabel(r.key), minRole: r.minRole || 'admin' }));
 }
 function minRoleForGate(key){ const w = WORKFLOW_CONFIG.find(w=>w.key===key); return w ? w.minRole : 'admin'; }
 function roleMeetsGate(role, key){ return (ROLE_RANK[role]||0) >= (ROLE_RANK[minRoleForGate(key)]||99); }
+function isGatedStage(key){ return WORKFLOW_CONFIG.some(w=>w.key===key); }
 
 // ---- Lead field configuration (drives the New Lead form + list filters) ----
 // Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
@@ -739,9 +741,6 @@ async function boot(){
     showConnectionBadge(false, isPlaceholder ? 'no Firebase config set yet' : 'SDK did not load');
     renderDemoBanner(true, isPlaceholder ? 'no Firebase config set yet' : 'the Firebase SDK did not load');
   }
-  document.getElementById('footer-note').textContent = DB.isLive()
-    ? 'Connected to Firebase — leads, masters, and documents are persisted live.'
-    : 'Demo mode — check your FIREBASE_CONFIG to wire this to your own Firestore project.';
   refreshStagesFromDB();
   refreshWorkflowFromDB();
   initAuth();
@@ -1659,29 +1658,59 @@ function wireUsersEvents(){
 }
 
 // ---- WORKFLOW CONFIG (own module) -----------------------------------------
-// Which role must approve each gated stage transition.
+// Which role must approve each gated stage transition. Any stage other than
+// "New" can be given a gate via "+ Add Gate" below; stages with no gate can
+// be advanced by anyone with edit access. Edits here are a local draft —
+// nothing is saved until "Save Workflow Config" is clicked.
+let workflowDraftRows = null;
+function workflowDraft(){
+  if(!workflowDraftRows) workflowDraftRows = WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+  return workflowDraftRows;
+}
 function renderWorkflowView(){
-  const rows = WORKFLOW_CONFIG.map((w,i)=>`<tr>
-      <td>${w.label}</td>
+  const draft = workflowDraft();
+  const gatedKeys = draft.map(w=>w.key);
+  const availableKeys = STAGE_KEYS.filter(k=>k!=='new' && !gatedKeys.includes(k));
+  const rows = draft.map((w,i)=>`<tr>
+      <td>${stageLabel(w.key)}</td>
       <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.minRole===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
+      <td><button class="btn btn-sm btn-ghost" data-wf-remove="${i}">Remove</button></td>
     </tr>`).join('');
   return `
     <div class="page-header"><h1>Workflow Config</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve each gated stage transition — see a lead's Stage &amp; Actions section under Progress Details.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve moving a lead into a given stage — see a lead's Stage &amp; Actions section under Progress Details. Stages with no gate below can be advanced by anyone with edit access.</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
-      <table><tr><th>Transition</th><th>Minimum Approver Role</th></tr>${rows}</table>
+      <table><tr><th>Transition (entry into)</th><th>Minimum Approver Role</th><th></th></tr>${rows || '<tr><td colspan="3" style="color:var(--muted);padding:14px;">No gates configured — anyone with edit access can advance any stage.</td></tr>'}</table>
     </div>
+    ${availableKeys.length ? `
+    <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+      <div><label>Stage</label><select id="wf-add-key">${availableKeys.map(k=>`<option value="${k}">${stageLabel(k)}</option>`).join('')}</select></div>
+      <div><label>Minimum Approver Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}">${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+      <button class="btn btn-sm btn-teal" id="wf-add-btn">+ Add Gate</button>
+    </div>` : `<p style="font-size:12.5px;color:var(--muted);">Every stage after New already has a gate — remove one above to free it up.</p>`}
     <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Save Workflow Config</button></div>
   `;
 }
 
 function wireWorkflowEvents(){
+  document.querySelectorAll('[data-wf-remove]').forEach(b=>b.onclick = () => {
+    workflowDraft().splice(parseInt(b.dataset.wfRemove, 10), 1);
+    render();
+  });
+  const addBtn = document.getElementById('wf-add-btn');
+  if(addBtn) addBtn.onclick = () => {
+    const key = document.getElementById('wf-add-key').value;
+    const minRole = document.getElementById('wf-add-role').value;
+    workflowDraft().push({ key, label: defaultGateLabel(key), minRole });
+    render();
+  };
   const saveBtn = document.getElementById('workflow-save');
   if(saveBtn) saveBtn.onclick = async () => {
-    const rows = WORKFLOW_CONFIG.map((w,i)=>({
+    const rows = workflowDraft().map((w,i)=>({
       key: w.key, label: w.label, minRole: document.getElementById('wf-role-'+i).value,
     }));
     await DB.saveWorkflow(rows);
+    workflowDraftRows = null;
     refreshWorkflowFromDB();
     render();
   };
@@ -1987,29 +2016,23 @@ function renderStageTab(l){
     </fieldset>`;
 
   let gateBlock = '';
-  if(next && next.key==='negotiation'){
-    const canApprove = !currentUser || roleMeetsGate(currentUser.role, 'negotiation');
-    gateBlock = `<fieldset><legend>Gate: Approval to enter Negotiation</legend>
+  if(next && isGatedStage(next.key)){
+    const canApprove = !currentUser || roleMeetsGate(currentUser.role, next.key);
+    const isClosing = next.key==='closed';
+    const legend = isClosing ? 'Gate: Sign-off to close as Acquired' : `Gate: Approval to enter ${next.label}`;
+    const buttonLabel = isClosing ? 'Close as Acquired' : `Move to ${next.label}`;
+    gateBlock = `<fieldset><legend>${legend}</legend>
       ${canApprove ? `
       <div class="form-grid">
-        <div><label>Approved by</label><input type="text" id="gate-approver" value="${(currentUser&&currentUser.name)||''}" placeholder="Manager name"></div>
-        <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
-      </div>
-      <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Move to ${next.label}</button>
-      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('negotiation')]} or higher can approve this transition (see Workflow Config).</p>`}
-    </fieldset>`;
-  } else if(next && next.key==='closed'){
-    const canApprove = !currentUser || roleMeetsGate(currentUser.role, 'closed');
-    gateBlock = `<fieldset><legend>Gate: Sign-off to close as Acquired</legend>
-      ${canApprove ? `
-      <div class="form-grid">
-        <div><label>Approved by</label><input type="text" id="gate-approver" value="${(currentUser&&currentUser.name)||''}" placeholder="MD / Approver name"></div>
+        <div><label>Approved by</label><input type="text" id="gate-approver" value="${(currentUser&&currentUser.name)||''}" placeholder="${isClosing ? 'MD / Approver name' : 'Approver name'}"></div>
+        ${isClosing ? `
         <div><label>Final Price</label><input type="number" id="gate-final-price" step="0.01" value="${l.priceValue||''}"></div>
         <div><label>Final Date</label><input type="date" id="gate-final-date" value="${todayStr()}"></div>
+        ` : ''}
         <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
       </div>
-      <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Close as Acquired</button>
-      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('closed')]} or higher can approve this transition (see Workflow Config).</p>`}
+      <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">${buttonLabel}</button>
+      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate(next.key)]} or higher can approve this transition (see Workflow Config).</p>`}
     </fieldset>`;
   } else if(next){
     gateBlock = `<div style="margin-bottom:14px;"><button class="btn btn-sm btn-teal" id="advance-btn">Move to ${next.label}</button>
@@ -2104,23 +2127,22 @@ function wireDetailTabEvents(l){
     if(advance) advance.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const next = STAGES[idx+1];
-      if((next.key==='negotiation' || next.key==='closed') && currentUser && !roleMeetsGate(currentUser.role, next.key)){
+      if(isGatedStage(next.key) && currentUser && !roleMeetsGate(currentUser.role, next.key)){
         alert('Only a ' + ROLE_LABELS[minRoleForGate(next.key)] + ' or higher can approve this transition.'); return;
       }
       const approver = document.getElementById('gate-approver')?.value.trim();
-      if((next.key==='negotiation' || next.key==='closed') && !approver){
+      if(isGatedStage(next.key) && !approver){
         alert('An approver name is required for this transition.'); return;
       }
       const patch = { stage: next.key };
-      patch.stageHistory = (l.stageHistory||[]).concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='negotiation'?'Approved to enter Negotiation':(next.key==='closed'?'Closed as Acquired':'Advanced')}]);
-      if(next.key==='negotiation'){
+      patch.stageHistory = (l.stageHistory||[]).concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='closed'?'Closed as Acquired':(isGatedStage(next.key)?('Approved entry into '+next.label):'Advanced')}]);
+      if(isGatedStage(next.key)){
         patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks')?.value.trim()||'' };
       }
       if(next.key==='closed'){
         patch.outcome = 'acquired';
         patch.finalPrice = parseFloat(document.getElementById('gate-final-price')?.value)||l.priceValue;
         patch.finalDate = document.getElementById('gate-final-date')?.value || todayStr();
-        patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks')?.value.trim()||'' };
       }
       await DB.updateLead(l.id, patch);
       renderDetailModal(l.id); render();
@@ -2239,6 +2261,7 @@ function wireSidebarNav(){
         // Always reset to the unfiltered All Leads view.
         goToLeadsList({});
       } else {
+        if(b.dataset.view==='workflow') workflowDraftRows = null; // discard any unsaved draft on fresh entry
         currentView = b.dataset.view;
         render();
       }
