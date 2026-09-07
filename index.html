@@ -807,9 +807,16 @@ async function doLogout(reason){
   }
 }
 
+// While true, onAuthStateChanged steps aside and lets whoever set it drive
+// currentUser/enterApp() themselves — used by the "create admin account"
+// flow below, which needs to write the new profile doc and read it back in
+// a guaranteed order (see the comment at suppressAuthListener=true there).
+let suppressAuthListener = false;
+
 function initAuth(){
   if(DB.isLive() && typeof firebase.auth === 'function'){
     firebase.auth().onAuthStateChanged(async fbUser => {
+      if(suppressAuthListener) return;
       if(!fbUser){
         currentUser = null;
         stopIdleTimer();
@@ -948,9 +955,25 @@ function showBootstrapScreen(){
     if(password.length < 6){ errEl.innerHTML = '<div class="auth-error">Password must be at least 6 characters.</div>'; return; }
     try{
       if(DB.isLive()){
-        const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
-        await DB.fsdb.collection('m_users').doc(cred.user.uid).set({ name, email, phone:'', role:'admin', active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-        // onAuthStateChanged fires and will call enterApp() once the doc is read back.
+        // createUserWithEmailAndPassword fires onAuthStateChanged the
+        // moment it resolves — racing the profile-doc write below. If that
+        // listener's read lands first, it finds no doc yet, signs the
+        // brand-new account straight back out, and shows a confusing
+        // "account isn't set up for access" error even though the account
+        // (and its profile) end up created moments later. Suppress the
+        // listener for this one flow and drive currentUser/enterApp()
+        // ourselves, in the guaranteed order: create → write → enter.
+        suppressAuthListener = true;
+        try{
+          const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+          const profile = { name, email, phone:'', role:'admin', active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+          await ensureDbInit();
+          await DB.fsdb.collection('m_users').doc(cred.user.uid).set(profile);
+          currentUser = Object.assign({ uid: cred.user.uid }, profile);
+          enterApp();
+        } finally {
+          suppressAuthListener = false;
+        }
       } else {
         currentUser = await DB.createUser({ name, email, phone:'', role:'admin', password });
         enterApp();
