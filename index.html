@@ -266,7 +266,7 @@ function refreshStagesFromDB(){
 }
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
@@ -285,6 +285,7 @@ const VIEW_ACCESS = {
   dashboard: ['admin','manager','executive'],
   progress:  ['admin','manager','executive'],
   list:      ['admin','manager','executive'],
+  newLead:   ['admin','manager','executive'],
   reports:   ['admin','manager'],
   configure: ['admin'],
   masters:   ['admin'],
@@ -1077,6 +1078,7 @@ function render(){
   if(currentView==='dashboard') root.innerHTML = renderDashboard();
   else if(currentView==='progress') root.innerHTML = renderProgress();
   else if(currentView==='list') root.innerHTML = renderList();
+  else if(currentView==='newLead') root.innerHTML = renderNewLeadView();
   else if(currentView==='reports') root.innerHTML = renderReports();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
@@ -1100,6 +1102,12 @@ function goToLeadsList(patch){
   listPage = 1;
   selectedLeadIds = new Set();
   currentView = 'list';
+  render();
+}
+// Jump to the New Land Lead page (its own page, not a popup — see
+// renderNewLeadView()/wireNewLeadViewEvents()).
+function goToNewLead(){
+  currentView = 'newLead';
   render();
 }
 // Jump to the Progress Details page, optionally pre-filtered to one status
@@ -1555,7 +1563,7 @@ function wireListEvents(){
   };
 
   const newBtn = document.getElementById('btn-new-lead');
-  if(newBtn) newBtn.addEventListener('click', openNewLeadModal);
+  if(newBtn) newBtn.addEventListener('click', goToNewLead);
 }
 
 // ---- MASTERS -------------------------------------------------------------
@@ -1895,52 +1903,51 @@ function wireConfigureEvents(){
 }
 
 // ---- MODALS: New Lead ---------------------------------------------------
-function openNewLeadModal(){
+// ---- NEW LAND LEAD (own page, not a popup) --------------------------------
+function renderNewLeadView(){
   const sources = DB.getMasters('leadSources');
   const cps = DB.getMasters('channelPartners');
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
   const execs = visibleExecutives();
 
-  const html = `
-    <div class="modal-overlay" id="overlay">
-      <div class="modal">
-        <div class="modal-head"><h3>New Land Lead</h3><button class="x" id="close-x">&times;</button></div>
-        <div class="modal-body">
-          <div class="form-grid">
-            <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
-            <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
-            <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
-            <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}</option>`).join('')}</select></div>
-            <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
-            <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
-            <div class="full" data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
-            <div data-field="googlePin"><label>Google Pin / Coordinates</label><input type="text" id="nl-pin" placeholder="lat, long"></div>
-            <div data-field="landClassification"><label>Land Classification</label><select id="nl-class">${classes.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
-            <div data-field="extent">
-              <label>Total Land Extent</label>
-              <div class="field-pair"><input type="number" id="nl-extent-val" step="0.01"><select id="nl-extent-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
-            </div>
-            <div data-field="price">
-              <label>Quoted Price (per unit)</label>
-              <div class="field-pair"><input type="number" id="nl-price-val" step="0.01"><select id="nl-price-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
-            </div>
-            <div class="full"><div class="computed" id="nl-computed"></div></div>
-            <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
-            <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone"></div>
-            <div data-field="mediatorName"><label>Mediator / Broker Name</label><input type="text" id="nl-med-name"></div>
-            <div><label>Mediator Phone</label><input type="text" id="nl-med-phone"></div>
-            <div class="full" data-field="nextCallDate"><label>Next Call Date</label><input type="date" id="nl-nextcall"></div>
-          </div>
+  return `
+    <div class="page-header"><h1>New Land Lead</h1></div>
+    <div class="card">
+      <div class="form-grid">
+        <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
+        <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
+        <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}</option>`).join('')}</select></div>
+        <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
+        <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
+        <div class="full" data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
+        <div data-field="googlePin"><label>Google Pin / Coordinates</label><input type="text" id="nl-pin" placeholder="lat, long"></div>
+        <div data-field="landClassification"><label>Land Classification</label><select id="nl-class">${classes.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
+        <div data-field="extent">
+          <label>Total Land Extent</label>
+          <div class="field-pair"><input type="number" id="nl-extent-val" step="0.01"><select id="nl-extent-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
         </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" id="cancel-nl">Cancel</button>
-          <button class="btn btn-teal" id="save-nl">Save Lead</button>
+        <div data-field="price">
+          <label>Quoted Price (per unit)</label>
+          <div class="field-pair"><input type="number" id="nl-price-val" step="0.01"><select id="nl-price-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('')}</select></div>
         </div>
+        <div class="full"><div class="computed" id="nl-computed"></div></div>
+        <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
+        <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone"></div>
+        <div data-field="mediatorName"><label>Mediator / Broker Name</label><input type="text" id="nl-med-name"></div>
+        <div><label>Mediator Phone</label><input type="text" id="nl-med-phone"></div>
+        <div class="full" data-field="nextCallDate"><label>Next Call Date</label><input type="date" id="nl-nextcall"></div>
       </div>
-    </div>`;
-  document.getElementById('modal-root').innerHTML = html;
+      <div style="margin-top:14px;display:flex;gap:8px;">
+        <button class="btn btn-teal" id="save-nl">Save Lead</button>
+        <button class="btn btn-ghost" id="cancel-nl">Cancel</button>
+      </div>
+    </div>
+  `;
+}
 
+function wireNewLeadViewEvents(){
   // Executives can only ever create leads assigned to themselves.
   if(currentUser && currentUser.role==='executive'){
     const execSel = document.getElementById('nl-exec');
@@ -1978,10 +1985,10 @@ function openNewLeadModal(){
     document.getElementById(id).addEventListener('change', recompute);
   });
   recompute();
-  document.getElementById('close-x').onclick = closeModal;
-  document.getElementById('cancel-nl').onclick = closeModal;
-  document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
-  document.getElementById('save-nl').onclick = async () => {
+  const cancelBtn = document.getElementById('cancel-nl');
+  if(cancelBtn) cancelBtn.onclick = () => goToLeadsList({});
+  const saveBtn = document.getElementById('save-nl');
+  if(saveBtn) saveBtn.onclick = async () => {
     // Enforce Mandatory flags from the Configure page (skip fields hidden by Visible=false).
     for(const [key, ids] of Object.entries(FIELD_TO_INPUT)){
       const cfg = fcfg[key];
@@ -2025,7 +2032,6 @@ function openNewLeadModal(){
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:exec, note:'Lead created'}],
     };
     await DB.addLead(lead);
-    closeModal();
     goToLeadsList({});
   };
 }
@@ -2383,6 +2389,7 @@ function wireViewEvents(){
 
   if(currentView==='progress'){ wireProgressEvents(); }
   if(currentView==='list'){ wireListEvents(); }
+  if(currentView==='newLead'){ wireNewLeadViewEvents(); }
   if(currentView==='reports'){ wireReportsEvents(); }
   if(currentView==='configure'){ wireConfigureEvents(); }
   if(currentView==='masters'){ wireMastersEvents(); }
