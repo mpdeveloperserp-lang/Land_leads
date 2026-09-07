@@ -13,6 +13,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <!-- Export libraries — used by the Reports page's Export Excel / Export PDF buttons.
      If these can't load (no network), exports fall back to CSV / browser print. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -46,6 +47,17 @@
   .main-col{flex:1;min-width:0;display:flex;flex-direction:column;}
   .topbar{background:#fff;border-bottom:1px solid var(--border);padding:15px 26px;display:flex;justify-content:space-between;align-items:center;}
   .topbar .page-title{font-size:17px;font-weight:700;color:var(--navy);}
+  #user-info{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);}
+  #user-info .who{text-align:right;line-height:1.3;}
+  #user-info .who b{color:var(--navy);display:block;font-size:13px;}
+  .auth-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);padding:20px;}
+  .auth-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:30px 32px;max-width:380px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.08);}
+  .auth-card h1{font-size:17px;color:var(--navy);margin:0 0 4px;}
+  .auth-card .sub{font-size:12.5px;color:var(--muted);margin-bottom:20px;}
+  .auth-card label{margin-top:12px;}
+  .auth-card label:first-of-type{margin-top:0;}
+  .auth-error{background:var(--danger-bg);color:var(--danger);font-size:12.5px;padding:9px 12px;border-radius:6px;margin-top:14px;}
+  .auth-card .btn{width:100%;margin-top:18px;}
   main{padding:20px 26px 60px;max-width:1500px;width:100%;margin:0 auto;}
   .btn{border:none;border-radius:6px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer;transition:.15s;}
   .btn-gold{background:var(--gold);color:#2b2200;}
@@ -159,7 +171,9 @@
 </head>
 <body>
 
-<div class="app-shell">
+<div id="auth-root" style="display:none;"></div>
+
+<div class="app-shell" id="app-shell" style="display:none;">
   <aside class="sidebar">
     <div class="sidebar-brand">
       <span class="co">MP DEVELOPERS</span>
@@ -179,6 +193,7 @@
   <div class="main-col">
     <div class="topbar">
       <span class="page-title" id="page-title">Dashboard</span>
+      <div id="user-info"></div>
     </div>
     <main>
       <div id="banner-holder"></div>
@@ -251,6 +266,48 @@ const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
 const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
+// ---- Roles & access ------------------------------------------------------
+// Admin: full access. Manager: all leads/progress + can approve workflow
+// gates, no Masters/Configure. Executive: only their own assigned leads —
+// lead data & progress only, nothing else. See the "Users & Access" master.
+const ROLES = ['admin','manager','executive'];
+const ROLE_LABELS = { admin:'Admin', manager:'Manager', executive:'Executive' };
+const ROLE_RANK = { executive:1, manager:2, admin:3 };
+const VIEW_ACCESS = {
+  dashboard: ['admin','manager','executive'],
+  progress:  ['admin','manager','executive'],
+  list:      ['admin','manager','executive'],
+  reports:   ['admin','manager'],
+  configure: ['admin'],
+  masters:   ['admin'],
+};
+function canAccessView(view){ return !!(currentUser && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role)); }
+// Leads visible to the signed-in user: Admin/Manager see everything,
+// Executive sees only leads assigned to them.
+function visibleLeads(){
+  const all = DB.getLeads();
+  if(currentUser && currentUser.role==='executive') return all.filter(l=>l.assignedExecutive===currentUser.name);
+  return all;
+}
+
+// ---- Workflow config -------------------------------------------------------
+// Which role must approve each gated stage transition (see wireDetailTabEvents'
+// advance-btn handler). Admin-editable on the Masters page ("Workflow Config").
+const DEFAULT_WORKFLOW_CONFIG = [
+  { key:'negotiation', label:'Approve entry into Negotiation', minRole:'manager' },
+  { key:'closed',      label:'Approve Closing (Acquired)',     minRole:'admin' },
+];
+let WORKFLOW_CONFIG = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+function refreshWorkflowFromDB(){
+  const rows = (DB && DB.getWorkflow) ? DB.getWorkflow() : null;
+  WORKFLOW_CONFIG = DEFAULT_WORKFLOW_CONFIG.map(def=>{
+    const stored = rows && rows.find(r=>r.key===def.key);
+    return { key:def.key, label:def.label, minRole: (stored && stored.minRole) || def.minRole };
+  });
+}
+function minRoleForGate(key){ const w = WORKFLOW_CONFIG.find(w=>w.key===key); return w ? w.minRole : 'admin'; }
+function roleMeetsGate(role, key){ return (ROLE_RANK[role]||0) >= (ROLE_RANK[minRoleForGate(key)]||99); }
+
 // ---- Lead field configuration (drives the New Lead form + list filters) ----
 // Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
 const DEFAULT_FIELD_CONFIG = [
@@ -288,7 +345,6 @@ const MASTER_DEFS = [
   { key:'leadSources',     label:'Lead Sources',          collection:'m_lead_sources',     fields:['label'] },
   { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'] },
   { key:'villages',        label:'Villages / Locations',  collection:'m_villages',         fields:['name','taluk','district'] },
-  { key:'executives',      label:'Executives / Users',    collection:'m_executives',       fields:['name','phone','role'] },
   { key:'landClasses',     label:'Land Classifications',  collection:'m_land_classes',     fields:['label'] },
   { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
   { key:'holdReasons',     label:'On-Hold Reasons',       collection:'m_hold_reasons',     fields:['label'] },
@@ -303,16 +359,25 @@ function seedMaster(key){
       {code:'CP-014', name:'Elite Land Brokers', phone:'9884098840', commissionPct:2},
     ],
     villages: ['Oragadam','Guduvancheri','Thiruporur','Sriperumbudur','Mahabalipuram','Chengalpattu','Padappai','Vandalur'].map(name=>({name, taluk:'', district:'Chennai / Kancheepuram'})),
-    executives: [
-      {name:'Karthik R', phone:'', role:'Land Executive'},
-      {name:'Divya S', phone:'', role:'Land Executive'},
-    ],
     landClasses: ['Agricultural','DTCP Approved Layout','Patta Land','Government Land','Disputed / Litigation','Other'].map(label=>({label})),
     dropReasons: ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'].map(label=>({label})),
     holdReasons: ['Awaiting owner decision','Budget deferred','Litigation pending','Awaiting documents','Other'].map(label=>({label})),
   };
   return data[key] || [];
 }
+
+// ---- Users & Access -------------------------------------------------------
+// Real accounts (Firebase Authentication when live) replace the old
+// free-text "Executives" master. Each user has a role — see ROLES above —
+// that governs which pages they can see and, for Executives, which leads.
+// Demo-mode passwords below are plaintext for offline preview only; a live
+// Firestore project uses real Firebase Authentication instead.
+const DEFAULT_USERS_SEED = [
+  { uid:'seed-admin',   name:'Admin User', email:'admin@demo.local',   phone:'', role:'admin',     password:'admin123',   active:true },
+  { uid:'seed-manager', name:'Land Manager', email:'manager@demo.local', phone:'', role:'manager',  password:'manager123', active:true },
+  { uid:'seed-karthik', name:'Karthik R',  email:'karthik@demo.local', phone:'', role:'executive', password:'exec123',    active:true },
+  { uid:'seed-divya',   name:'Divya S',    email:'divya@demo.local',   phone:'', role:'executive', password:'exec123',    active:true },
+];
 
 const fmtINR = n => n==null||isNaN(n) ? '—' : '₹' + Math.round(n).toLocaleString('en-IN');
 const fmtNum = n => n==null||isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', {maximumFractionDigits:1});
@@ -383,6 +448,8 @@ class MemoryDB {
     });
     this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
+    this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+    this.users = DEFAULT_USERS_SEED.map(u=>Object.assign({ id:u.uid }, u));
   }
   async init(){ /* nothing to load — already seeded in memory */ }
   ready(){ return Promise.resolve(); }
@@ -401,6 +468,29 @@ class MemoryDB {
   async saveFieldConfig(rows){ this.fieldConfig = rows.map(r=>Object.assign({}, r)); }
   getStages(){ return this.stages; }
   async saveStages(rows){ this.stages = rows.map(r=>Object.assign({}, r)); }
+  getWorkflow(){ return this.workflow; }
+  async saveWorkflow(rows){ this.workflow = rows.map(r=>Object.assign({}, r)); }
+  // ---- Users & Access (demo-mode mock — plaintext password, memory-only) --
+  getUsers(){ return this.users.filter(u=>u.active!==false); }
+  getAllUsers(){ return this.users; }
+  async login(email, password){
+    const e = (email||'').trim().toLowerCase();
+    const user = this.users.find(u=>u.email.toLowerCase()===e && u.active!==false);
+    if(!user || user.password !== password) throw new Error('Incorrect email or password.');
+    return Object.assign({}, user);
+  }
+  async logout(){ /* no-op — demo mode holds no session */ }
+  async createUser({name, email, phone, role, password}){
+    const e = (email||'').trim().toLowerCase();
+    if(this.users.find(u=>u.email.toLowerCase()===e)) throw new Error('A user with that email already exists.');
+    const newUid = uid('USR');
+    const newUser = { id:newUid, uid:newUid, name, email:(email||'').trim(), phone: phone||'', role, password, active:true };
+    this.users.push(newUser);
+    return Object.assign({}, newUser);
+  }
+  async updateUser(userUid, patch){ const i=this.users.findIndex(u=>u.uid===userUid); if(i>-1) this.users[i]=Object.assign({}, this.users[i], patch); }
+  async toggleUser(userUid){ const u=this.users.find(x=>x.uid===userUid); if(u) await this.updateUser(userUid, {active: !(u.active!==false)}); }
+  async deleteUser(userUid){ this.users = this.users.filter(u=>u.uid!==userUid); }
 }
 
 class FirestoreDB {
@@ -412,8 +502,10 @@ class FirestoreDB {
     MASTER_DEFS.forEach(m => this.masters[m.key] = []);
     this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
+    this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+    this.users = [];
     this._onChange = null;
-    this._pending = new Set(['leads', 'fieldConfig', 'stages', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
     this._readyResolvers = [];
   }
   onChange(cb){ this._onChange = cb; }
@@ -472,6 +564,25 @@ class FirestoreDB {
       if(this._onChange) this._onChange();
     }, err=>{ console.error('stages listener error', err); this._markReady('stages'); });
 
+    // One-time seed of the workflow config doc if it doesn't exist yet.
+    const wfRef = this.fsdb.collection('settings').doc('workflow');
+    const wfSnap = await wfRef.get();
+    if(!wfSnap.exists){ await wfRef.set({ rows: DEFAULT_WORKFLOW_CONFIG }); }
+    wfRef.onSnapshot(snap=>{
+      this.workflow = (snap.data() && snap.data().rows) || DEFAULT_WORKFLOW_CONFIG;
+      this._markReady('workflow');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('workflow listener error', err); this._markReady('workflow'); });
+
+    // Users are NOT auto-seeded — real accounts are created from the Users
+    // & Access master (or the one-time "create admin" screen on first run),
+    // since a Firestore doc alone can't create a working login.
+    this.fsdb.collection('m_users').onSnapshot(snap=>{
+      this.users = snap.docs.map(d=>Object.assign({ uid:d.id, id:d.id }, d.data()));
+      this._markReady('users');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('users listener error', err); this._markReady('users'); });
+
     // Live listeners keep local caches (and the UI) in sync with Firestore.
     this.fsdb.collection('leads').orderBy('createdAt','desc').onSnapshot(snap=>{
       this.leads = snap.docs.map(d=>Object.assign({ id:d.id }, d.data()));
@@ -522,6 +633,33 @@ class FirestoreDB {
   async saveFieldConfig(rows){ await this.fsdb.collection('settings').doc('leadFieldConfig').set({ rows }); }
   getStages(){ return this.stages; }
   async saveStages(rows){ await this.fsdb.collection('settings').doc('stages').set({ rows }); }
+  getWorkflow(){ return this.workflow; }
+  async saveWorkflow(rows){ await this.fsdb.collection('settings').doc('workflow').set({ rows }); }
+  // ---- Users & Access -------------------------------------------------
+  getUsers(){ return this.users.filter(u=>u.active!==false); }
+  getAllUsers(){ return this.users; }
+  // Creates the new account on a SECONDARY Firebase app instance so the
+  // admin creating it stays signed in on the primary app — the standard
+  // client-side workaround for admin-created users without a backend.
+  async createUser({name, email, phone, role, password}){
+    const secondaryApp = firebase.initializeApp(FIREBASE_CONFIG, 'Secondary-' + Date.now());
+    try{
+      const cred = await secondaryApp.auth().createUserWithEmailAndPassword((email||'').trim(), password);
+      const newUid = cred.user.uid;
+      await secondaryApp.auth().signOut();
+      const doc = { name, email:(email||'').trim(), phone: phone||'', role, active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+      await this.fsdb.collection('m_users').doc(newUid).set(doc);
+      return Object.assign({ uid:newUid, id:newUid }, doc);
+    } finally {
+      await secondaryApp.delete();
+    }
+  }
+  async updateUser(userUid, patch){ await this.fsdb.collection('m_users').doc(userUid).update(patch); }
+  async toggleUser(userUid){
+    const u = this.users.find(x=>x.uid===userUid);
+    await this.updateUser(userUid, { active: !(u && u.active!==false) });
+  }
+  async deleteUser(userUid){ await this.fsdb.collection('m_users').doc(userUid).delete(); }
 }
 
 // ---- Boot: pick MemoryDB or FirestoreDB, then render --------------------
@@ -557,7 +695,8 @@ async function boot(){
       DB = new FirestoreDB(fsdb, storage);
       DB.onChange(()=>{
         refreshStagesFromDB();
-        render();
+        refreshWorkflowFromDB();
+        if(currentUser) render();
         if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
       });
       await DB.init();
@@ -581,7 +720,160 @@ async function boot(){
     ? 'Connected to Firebase — leads, masters, and documents are persisted live.'
     : 'Demo mode — check your FIREBASE_CONFIG to wire this to your own Firestore project.';
   refreshStagesFromDB();
+  refreshWorkflowFromDB();
+  initAuth();
+}
+
+// =========================================================================
+// AUTH / ACCESS — a real login gate in front of the whole app. Live mode
+// uses Firebase Authentication; demo mode uses a lightweight in-memory
+// mock (see DEFAULT_USERS_SEED) so the whole flow works the same offline.
+// =========================================================================
+let currentUser = null;
+
+function initAuth(){
+  if(DB.isLive() && typeof firebase.auth === 'function'){
+    firebase.auth().onAuthStateChanged(async fbUser => {
+      if(!fbUser){ currentUser = null; showLoginScreen(); return; }
+      try{
+        const doc = await DB.fsdb.collection('m_users').doc(fbUser.uid).get();
+        if(doc.exists && doc.data().active !== false){
+          currentUser = Object.assign({ uid: fbUser.uid }, doc.data());
+          enterApp();
+        } else {
+          await firebase.auth().signOut();
+          showLoginScreen('Your account isn\'t set up for access yet. Ask your admin to add you under Masters → Users & Access.');
+        }
+      }catch(err){
+        console.error('Could not load your user profile.', err);
+        await firebase.auth().signOut();
+        showLoginScreen('Could not verify your account: ' + err.message);
+      }
+    });
+  } else {
+    showLoginScreen();
+  }
+}
+
+function friendlyAuthError(err){
+  const code = (err && err.code) || '';
+  if(/user-not-found|wrong-password|invalid-credential|invalid-login-credentials/.test(code)) return 'Incorrect email or password.';
+  if(/too-many-requests/.test(code)) return 'Too many attempts — try again in a few minutes.';
+  if(/invalid-email/.test(code)) return 'That email address looks invalid.';
+  if(/email-already-in-use/.test(code)) return 'A user with that email already exists.';
+  if(/weak-password/.test(code)) return 'Password must be at least 6 characters.';
+  return (err && err.message) || 'Sign-in failed.';
+}
+
+function enterApp(){
+  document.getElementById('auth-root').style.display = 'none';
+  document.getElementById('auth-root').innerHTML = '';
+  document.getElementById('app-shell').style.display = 'flex';
+  applyRoleVisibility();
+  renderUserInfo();
+  if(!canAccessView(currentView)) currentView = 'dashboard';
   render();
+}
+
+function applyRoleVisibility(){
+  document.querySelectorAll('#tabs > button[data-view]').forEach(b=>{
+    const allowed = VIEW_ACCESS[b.dataset.view] ? VIEW_ACCESS[b.dataset.view].includes(currentUser.role) : true;
+    b.style.display = allowed ? '' : 'none';
+  });
+}
+
+function renderUserInfo(){
+  const el = document.getElementById('user-info');
+  if(!el || !currentUser) return;
+  el.innerHTML = `
+    <div class="who"><b>${currentUser.name}</b><span>${ROLE_LABELS[currentUser.role]||currentUser.role}</span></div>
+    <button class="btn btn-sm btn-ghost" id="logout-btn">Log out</button>`;
+  document.getElementById('logout-btn').onclick = async () => {
+    if(DB.isLive()) await firebase.auth().signOut();
+    else { await DB.logout(); currentUser = null; showLoginScreen(); }
+  };
+}
+
+function showLoginScreen(errorMsg){
+  currentUser = null;
+  const shell = document.getElementById('app-shell');
+  if(shell) shell.style.display = 'none';
+  const root = document.getElementById('auth-root');
+  root.style.display = 'block';
+  root.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <h1>Land Leads ERP</h1>
+        <div class="sub">MP Developers — sign in to continue</div>
+        <label>Email</label><input type="email" id="auth-email" autocomplete="username">
+        <label>Password</label><input type="password" id="auth-password" autocomplete="current-password">
+        ${errorMsg ? `<div class="auth-error">${errorMsg}</div>` : ''}
+        <button class="btn btn-teal" id="auth-login-btn">Sign In</button>
+        <div style="text-align:center;margin-top:14px;font-size:12px;"><a href="#" id="auth-forgot" style="color:var(--teal);">Forgot password?</a></div>
+        <div style="text-align:center;margin-top:8px;font-size:12px;"><a href="#" id="auth-bootstrap-link" style="color:var(--muted);">Setting this up for the first time? Create the admin account</a></div>
+        ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>admin@demo.local</b> / admin123 (Admin), <b>manager@demo.local</b> / manager123 (Manager), or <b>karthik@demo.local</b> / exec123 (Executive).</p>` : ''}
+      </div>
+    </div>`;
+  document.getElementById('auth-login-btn').onclick = async () => {
+    const email = document.getElementById('auth-email').value.trim();
+    const password = document.getElementById('auth-password').value;
+    if(!email || !password){ showLoginScreen('Enter both email and password.'); return; }
+    try{
+      if(DB.isLive()){
+        await firebase.auth().signInWithEmailAndPassword(email, password);
+        // onAuthStateChanged picks this up and calls enterApp().
+      } else {
+        currentUser = await DB.login(email, password);
+        enterApp();
+      }
+    }catch(err){ showLoginScreen(friendlyAuthError(err)); }
+  };
+  document.getElementById('auth-forgot').onclick = async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('auth-email').value.trim();
+    if(!email){ alert('Enter your email above first, then click "Forgot password?" again.'); return; }
+    if(!DB.isLive()){ alert('Password reset isn\'t available in demo mode.'); return; }
+    try{ await firebase.auth().sendPasswordResetEmail(email); alert('Password reset email sent to ' + email + '.'); }
+    catch(err){ alert('Could not send reset email: ' + friendlyAuthError(err)); }
+  };
+  document.getElementById('auth-bootstrap-link').onclick = (e) => { e.preventDefault(); showBootstrapScreen(); };
+}
+
+function showBootstrapScreen(){
+  const root = document.getElementById('auth-root');
+  root.innerHTML = `
+    <div class="auth-wrap">
+      <div class="auth-card">
+        <h1>Create the Admin Account</h1>
+        <div class="sub">One-time setup — this becomes the first Admin login.</div>
+        <label>Your Name</label><input type="text" id="bs-name">
+        <label>Email</label><input type="email" id="bs-email" autocomplete="username">
+        <label>Password</label><input type="password" id="bs-password" autocomplete="new-password" placeholder="At least 6 characters">
+        <div id="bs-error"></div>
+        <button class="btn btn-teal" id="bs-create-btn">Create Admin Account</button>
+        <div style="text-align:center;margin-top:14px;font-size:12px;"><a href="#" id="bs-back" style="color:var(--teal);">Back to sign in</a></div>
+      </div>
+    </div>`;
+  document.getElementById('bs-back').onclick = (e) => { e.preventDefault(); showLoginScreen(); };
+  document.getElementById('bs-create-btn').onclick = async () => {
+    const name = document.getElementById('bs-name').value.trim();
+    const email = document.getElementById('bs-email').value.trim();
+    const password = document.getElementById('bs-password').value;
+    const errEl = document.getElementById('bs-error');
+    errEl.innerHTML = '';
+    if(!name || !email || !password){ errEl.innerHTML = '<div class="auth-error">All fields are required.</div>'; return; }
+    if(password.length < 6){ errEl.innerHTML = '<div class="auth-error">Password must be at least 6 characters.</div>'; return; }
+    try{
+      if(DB.isLive()){
+        const cred = await firebase.auth().createUserWithEmailAndPassword(email, password);
+        await DB.fsdb.collection('m_users').doc(cred.user.uid).set({ name, email, phone:'', role:'admin', active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        // onAuthStateChanged fires and will call enterApp() once the doc is read back.
+      } else {
+        currentUser = await DB.createUser({ name, email, phone:'', role:'admin', password });
+        enterApp();
+      }
+    }catch(err){ errEl.innerHTML = '<div class="auth-error">' + friendlyAuthError(err) + '</div>'; }
+  };
 }
 
 // ---- App state ---------------------------------------------------------
@@ -604,6 +896,7 @@ let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFro
 let suppressHistoryPush = false;
 
 function render(){
+  if(!canAccessView(currentView)) currentView = 'dashboard';
   document.querySelectorAll('#tabs > button[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===currentView));
   document.getElementById('page-title').textContent = PAGE_TITLES[currentView] || '';
   const root = document.getElementById('view-root');
@@ -691,7 +984,7 @@ function leadMatchesFilters(l, f){
 
 // ---- DASHBOARD -----------------------------------------------------------
 function renderDashboard(){
-  const leads = DB.getLeads();
+  const leads = visibleLeads();
   const active = leads.filter(isActive);
   const totalExtentAcre = active.reduce((s,l)=>s+leadExtentSqft(l),0) / 43560;
   const overdueCalls = leads.filter(l=>isActive(l) && l.nextCallDate && new Date(l.nextCallDate) < new Date(todayStr()));
@@ -878,9 +1171,9 @@ function wireReportsEvents(){
 function renderProgress(){
   const sources = DB.getMasters('leadSources');
   const cps = DB.getMasters('channelPartners');
-  const execs = DB.getMasters('executives');
+  const execs = DB.getUsers();
   const activeFilters = Object.assign({}, DEFAULT_FILTERS, progressFilters);
-  const leads = DB.getLeads().filter(l=>leadMatchesFilters(l, activeFilters));
+  const leads = visibleLeads().filter(l=>leadMatchesFilters(l, activeFilters));
 
   const rows = leads.map(l=>{
     const call = callBadgeInfo(l);
@@ -941,9 +1234,9 @@ function wireProgressEvents(){
 function renderList(){
   const sources = DB.getMasters('leadSources');
   const cps = DB.getMasters('channelPartners');
-  const execs = DB.getMasters('executives');
+  const execs = DB.getUsers();
   const fcfg = fieldConfigMap();
-  const allLeads = DB.getLeads();
+  const allLeads = visibleLeads();
   const filtered = allLeads.filter(l=>leadMatchesFilters(l, listFilters));
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total/PAGE_SIZE));
@@ -1066,13 +1359,13 @@ function wireListEvents(){
   const pgPrev = document.getElementById('pg-prev'); if(pgPrev) pgPrev.onclick = () => { listPage = Math.max(1, listPage-1); render(); };
   const pgNext = document.getElementById('pg-next'); if(pgNext) pgNext.onclick = () => { listPage = listPage+1; render(); };
   const pgLast = document.getElementById('pg-last'); if(pgLast) pgLast.onclick = () => {
-    const total = DB.getLeads().filter(l=>leadMatchesFilters(l, listFilters)).length;
+    const total = visibleLeads().filter(l=>leadMatchesFilters(l, listFilters)).length;
     listPage = Math.max(1, Math.ceil(total/PAGE_SIZE)); render();
   };
 
   const exportBtn = document.getElementById('btn-export-list');
   if(exportBtn) exportBtn.onclick = () => {
-    const filtered = DB.getLeads().filter(l=>leadMatchesFilters(l, listFilters));
+    const filtered = visibleLeads().filter(l=>leadMatchesFilters(l, listFilters));
     const source = selectedLeadIds.size ? filtered.filter(l=>selectedLeadIds.has(l.id)) : filtered;
     if(!source.length){ alert('Nothing to export.'); return; }
     const rows = source.map(l=>({
@@ -1090,9 +1383,19 @@ function wireListEvents(){
 
 // ---- MASTERS -------------------------------------------------------------
 const STAGES_MASTER_KEY = '__stages__';
+const WORKFLOW_MASTER_KEY = '__workflow__';
+const USERS_MASTER_KEY = '__users__';
+// Extra dropdown options appended after the regular MASTER_DEFS ones, shared
+// by every branch of the Masters page so the select always shows all of them.
+function extraMasterOptions(selectedKey){
+  const opt = (key, label) => `<option value="${key}" ${key===selectedKey?'selected':''}>${label}</option>`;
+  return opt(STAGES_MASTER_KEY,'Status Config') + opt(WORKFLOW_MASTER_KEY,'Workflow Config') + opt(USERS_MASTER_KEY,'Users &amp; Access');
+}
 
 function renderMasters(){
   if(currentMasterKey === STAGES_MASTER_KEY) return renderStagesMaster();
+  if(currentMasterKey === WORKFLOW_MASTER_KEY) return renderWorkflowMaster();
+  if(currentMasterKey === USERS_MASTER_KEY) return renderUsersMaster();
 
   const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
   const items = DB.getAllMasters(def.key);
@@ -1115,7 +1418,7 @@ function renderMasters(){
       <div class="form-grid">
         <div><label>Master Table</label><select id="master-select">
           ${MASTER_DEFS.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
-          <option value="${STAGES_MASTER_KEY}">Stages / Pipeline</option>
+          ${extraMasterOptions(null)}
         </select></div>
       </div>
       <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
@@ -1155,7 +1458,7 @@ function renderStagesMaster(){
       <div class="form-grid">
         <div><label>Master Table</label><select id="master-select">
           ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
-          <option value="${STAGES_MASTER_KEY}" selected>Stages / Pipeline</option>
+          ${extraMasterOptions(STAGES_MASTER_KEY)}
         </select></div>
       </div>
       <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
@@ -1168,6 +1471,84 @@ function renderStagesMaster(){
       </table>
     </div>
     <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="stages-save">Save Stages</button></div>
+  `;
+}
+
+// Workflow Config: which role must approve each gated stage transition.
+function renderWorkflowMaster(){
+  const rows = WORKFLOW_CONFIG.map((w,i)=>`<tr>
+      <td>${w.label}</td>
+      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.minRole===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
+    </tr>`).join('');
+  return `
+    <div class="page-header"><h1>Masters</h1></div>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Master Table</label><select id="master-select">
+          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
+          ${extraMasterOptions(WORKFLOW_MASTER_KEY)}
+        </select></div>
+      </div>
+      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve each gated stage transition — see a lead's Stage &amp; Actions section under Progress Details.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table><tr><th>Transition</th><th>Minimum Approver Role</th></tr>${rows}</table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Save Workflow Config</button></div>
+  `;
+}
+
+// Users & Access: replaces the old free-text "Executives" master with real
+// accounts. Live mode creates a genuine Firebase Authentication sign-in;
+// demo mode creates an in-memory mock login (see DB.createUser).
+function renderUsersMaster(){
+  const items = DB.getAllUsers();
+  const editing = editingMasterId ? items.find(u=>u.uid===editingMasterId) : null;
+  const rows = items.map(u=>`<tr>
+      <td>${u.name}</td><td>${u.email}</td><td>${u.phone||'—'}</td>
+      <td><span class="badge badge-navy">${ROLE_LABELS[u.role]||u.role}</span></td>
+      <td>${u.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-user-toggle="${u.uid}" title="${u.active!==false?'Deactivate':'Activate'}">${u.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role">✎</button>
+        <button class="icon-btn icon-del" data-user-delete="${u.uid}" title="Remove access record">🗑</button>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="6" class="empty">No users yet.</td></tr>`;
+
+  return `
+    <div class="page-header"><h1>Masters</h1></div>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Master Table</label><select id="master-select">
+          ${MASTER_DEFS.map(m=>`<option value="${m.key}">${m.label}</option>`).join('')}
+          ${extraMasterOptions(USERS_MASTER_KEY)}
+        </select></div>
+      </div>
+      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} A user\'s role controls what they can see and, for Executives, which leads they can work on.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing ? 'Edit User' : 'Add User'}</h2>
+      <div class="form-grid">
+        <div><label>Name</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
+        <div><label>Email</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
+        <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
+        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${editing&&editing.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+        ${editing ? '' : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
+      </div>
+      ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email and password can\'t be changed here — the user can reset their password from the sign-in screen\'s "Forgot password?" link.</p>' : ''}
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="user-save">${editing?'Update':'Create User'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="user-cancel">Cancel</button>':''}
+      </div>
+    </div>
   `;
 }
 
@@ -1190,6 +1571,57 @@ function wireMastersEvents(){
       refreshStagesFromDB();
       render();
     };
+    return;
+  }
+
+  if(currentMasterKey === WORKFLOW_MASTER_KEY){
+    const saveBtn = document.getElementById('workflow-save');
+    if(saveBtn) saveBtn.onclick = async () => {
+      const rows = WORKFLOW_CONFIG.map((w,i)=>({
+        key: w.key, label: w.label, minRole: document.getElementById('wf-role-'+i).value,
+      }));
+      await DB.saveWorkflow(rows);
+      refreshWorkflowFromDB();
+      render();
+    };
+    return;
+  }
+
+  if(currentMasterKey === USERS_MASTER_KEY){
+    document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.userEdit; render(); });
+    document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleUser(b.dataset.userToggle); render(); });
+    document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick = async () => {
+      const extra = DB.isLive() ? ' Their sign-in account itself must be removed separately in the Firebase Console if you want it fully deleted.' : '';
+      if(!confirm('Remove this user\'s access record?' + extra + ' This cannot be undone.')) return;
+      await DB.deleteUser(b.dataset.userDelete);
+      if(editingMasterId===b.dataset.userDelete) editingMasterId=null;
+      render();
+    });
+    const saveBtn = document.getElementById('user-save');
+    if(saveBtn) saveBtn.onclick = async () => {
+      const name = document.getElementById('uf-name').value.trim();
+      const email = document.getElementById('uf-email').value.trim();
+      const phone = document.getElementById('uf-phone').value.trim();
+      const role = document.getElementById('uf-role').value;
+      if(!name){ alert('Name is required.'); return; }
+      if(editingMasterId){
+        await DB.updateUser(editingMasterId, { name, phone, role });
+        editingMasterId = null;
+      } else {
+        const password = document.getElementById('uf-password').value;
+        if(!email){ alert('Email is required.'); return; }
+        if(!password || password.length < 6){ alert('Password must be at least 6 characters.'); return; }
+        try{
+          await DB.createUser({ name, email, phone, role, password });
+        }catch(err){
+          alert('Could not create user: ' + friendlyAuthError(err));
+          return;
+        }
+      }
+      render();
+    };
+    const cancelBtn = document.getElementById('user-cancel');
+    if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
     return;
   }
 
@@ -1260,7 +1692,7 @@ function openNewLeadModal(){
   const cps = DB.getMasters('channelPartners');
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
-  const execs = DB.getMasters('executives');
+  const execs = DB.getUsers();
 
   const html = `
     <div class="modal-overlay" id="overlay">
@@ -1300,6 +1732,15 @@ function openNewLeadModal(){
       </div>
     </div>`;
   document.getElementById('modal-root').innerHTML = html;
+
+  // Executives can only ever create leads assigned to themselves.
+  if(currentUser && currentUser.role==='executive'){
+    const execSel = document.getElementById('nl-exec');
+    if(execSel){
+      execSel.innerHTML = `<option value="${currentUser.name}" selected>${currentUser.name} (you)</option>`;
+      execSel.disabled = true;
+    }
+  }
 
   // Apply the Configure page's Visible/Mandatory settings to this form.
   const fcfg = fieldConfigMap();
@@ -1383,6 +1824,10 @@ function openNewLeadModal(){
 
 // ---- MODAL: Lead Detail --------------------------------------------------
 function openLeadDetail(id){
+  const l = DB.getLead(id);
+  if(currentUser && currentUser.role==='executive' && l && l.assignedExecutive !== currentUser.name){
+    alert('This lead isn\'t assigned to you.'); return;
+  }
   currentDetailLeadId = id;
   renderDetailModal(id);
 }
@@ -1472,22 +1917,28 @@ function renderStageTab(l){
 
   let gateBlock = '';
   if(next && next.key==='negotiation'){
+    const canApprove = !currentUser || roleMeetsGate(currentUser.role, 'negotiation');
     gateBlock = `<fieldset><legend>Gate: Approval to enter Negotiation</legend>
+      ${canApprove ? `
       <div class="form-grid">
-        <div><label>Approved by</label><input type="text" id="gate-approver" placeholder="Manager name"></div>
+        <div><label>Approved by</label><input type="text" id="gate-approver" value="${(currentUser&&currentUser.name)||''}" placeholder="Manager name"></div>
         <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
       </div>
       <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Move to ${next.label}</button>
+      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('negotiation')]} or higher can approve this transition (see Masters → Workflow Config).</p>`}
     </fieldset>`;
   } else if(next && next.key==='closed'){
+    const canApprove = !currentUser || roleMeetsGate(currentUser.role, 'closed');
     gateBlock = `<fieldset><legend>Gate: Sign-off to close as Acquired</legend>
+      ${canApprove ? `
       <div class="form-grid">
-        <div><label>Approved by</label><input type="text" id="gate-approver" placeholder="MD / Approver name"></div>
+        <div><label>Approved by</label><input type="text" id="gate-approver" value="${(currentUser&&currentUser.name)||''}" placeholder="MD / Approver name"></div>
         <div><label>Final Price</label><input type="number" id="gate-final-price" step="0.01" value="${l.priceValue||''}"></div>
         <div><label>Final Date</label><input type="date" id="gate-final-date" value="${todayStr()}"></div>
         <div><label>Remarks</label><input type="text" id="gate-remarks"></div>
       </div>
       <button class="btn btn-sm btn-teal" id="advance-btn" style="margin-top:8px;">Close as Acquired</button>
+      ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[minRoleForGate('closed')]} or higher can approve this transition (see Masters → Workflow Config).</p>`}
     </fieldset>`;
   } else if(next){
     gateBlock = `<div style="margin-bottom:14px;"><button class="btn btn-sm btn-teal" id="advance-btn">Move to ${next.label}</button>
@@ -1582,6 +2033,9 @@ function wireDetailTabEvents(l){
     if(advance) advance.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const next = STAGES[idx+1];
+      if((next.key==='negotiation' || next.key==='closed') && currentUser && !roleMeetsGate(currentUser.role, next.key)){
+        alert('Only a ' + ROLE_LABELS[minRoleForGate(next.key)] + ' or higher can approve this transition.'); return;
+      }
       const approver = document.getElementById('gate-approver')?.value.trim();
       if((next.key==='negotiation' || next.key==='closed') && !approver){
         alert('An approver name is required for this transition.'); return;
