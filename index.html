@@ -1824,9 +1824,24 @@ function workflowDraft(){
   if(!workflowDraftRows) workflowDraftRows = WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
   return workflowDraftRows;
 }
+// "Application Role", "From Status" and "To Status" are three independent
+// selects in the Add New row (matching the reference layout), with To's
+// options depending on whichever From is currently picked. All three
+// re-render the whole view on change (so To can recompute) — which would
+// otherwise reset the other two back to their defaults, so all three
+// selections are held here and restored as the `selected` option on every
+// render, not left to the DOM to remember on its own.
+let workflowAddRole = null;
+let workflowAddFrom = null;
+let workflowAddTo = null;
 function renderWorkflowView(){
   const draft = workflowDraft();
   const allPairs = adjacentTransitionPairs();
+  const fromOptions = [...new Set(allPairs.map(p=>p.from))];
+  if(!workflowAddFrom || !fromOptions.includes(workflowAddFrom)) workflowAddFrom = fromOptions[0];
+  if(!workflowAddRole || !ROLES.includes(workflowAddRole)) workflowAddRole = ROLES[0];
+  const toOptions = allPairs.filter(p=>p.from===workflowAddFrom).map(p=>p.to);
+  if(!workflowAddTo || !toOptions.includes(workflowAddTo)) workflowAddTo = toOptions[0];
   const rows = draft.map((w,i)=>`<tr>
       <td><button class="btn btn-sm btn-ghost" data-wf-remove="${i}" title="Delete">🗑</button></td>
       <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
@@ -1840,8 +1855,9 @@ function renderWorkflowView(){
       <table><tr><th></th><th>Application Role</th><th>From Status</th><th>To Status</th></tr>${rows || '<tr><td colspan="4" style="color:var(--muted);padding:14px;">No mappings configured — anyone with edit access can move a lead to any adjacent stage.</td></tr>'}</table>
     </div>
     <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
-      <div><label>Application Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}">${ROLE_LABELS[r]}</option>`).join('')}</select></div>
-      <div><label>From Status → To Status</label><select id="wf-add-pair">${allPairs.map(p=>`<option value="${p.from}::${p.to}">${stageLabel(p.from)} → ${stageLabel(p.to)}</option>`).join('')}</select></div>
+      <div><label>Application Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}" ${r===workflowAddRole?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+      <div><label>From Status</label><select id="wf-add-from">${fromOptions.map(f=>`<option value="${f}" ${f===workflowAddFrom?'selected':''}>${stageLabel(f)}</option>`).join('')}</select></div>
+      <div><label>To Status</label><select id="wf-add-to">${toOptions.map(t=>`<option value="${t}" ${t===workflowAddTo?'selected':''}>${stageLabel(t)}</option>`).join('')}</select></div>
       <button class="btn btn-sm btn-teal" id="wf-add-btn">+ Add New</button>
     </div>
     <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Update</button></div>
@@ -1853,9 +1869,20 @@ function wireWorkflowEvents(){
     workflowDraft().splice(parseInt(b.dataset.wfRemove, 10), 1);
     render();
   });
+  const roleSel = document.getElementById('wf-add-role');
+  if(roleSel) roleSel.onchange = () => { workflowAddRole = roleSel.value; render(); };
+  const fromSel = document.getElementById('wf-add-from');
+  if(fromSel) fromSel.onchange = () => {
+    workflowAddFrom = fromSel.value;
+    workflowAddTo = null; // stale for the new From — renderWorkflowView() picks a fresh default
+    render(); // re-render so "To Status" recomputes its options for the new From
+  };
+  const toSel = document.getElementById('wf-add-to');
+  if(toSel) toSel.onchange = () => { workflowAddTo = toSel.value; render(); };
   const addBtn = document.getElementById('wf-add-btn');
   if(addBtn) addBtn.onclick = () => {
-    const [from, to] = document.getElementById('wf-add-pair').value.split('::');
+    const from = document.getElementById('wf-add-from').value;
+    const to = document.getElementById('wf-add-to').value;
     const role = document.getElementById('wf-add-role').value;
     const draft = workflowDraft();
     if(draft.some(w=>w.from===from && w.to===to && w.role===role)){
@@ -2507,7 +2534,7 @@ function wireSidebarNav(){
         // Always reset to the unfiltered All Leads view.
         goToLeadsList({});
       } else {
-        if(b.dataset.view==='workflow') workflowDraftRows = null; // discard any unsaved draft on fresh entry
+        if(b.dataset.view==='workflow'){ workflowDraftRows = null; workflowAddRole = null; workflowAddFrom = null; workflowAddTo = null; } // discard any unsaved draft on fresh entry
         if(b.dataset.view==='statusConfig') statusDraftRows = null;
         currentView = b.dataset.view;
         render();
