@@ -237,12 +237,15 @@ const FIREBASE_CONFIG = {
 };
 
 // ---- Pipeline stages ------------------------------------------------------
-// The stage KEYS and their order are fixed by the process (the stage-gating
-// rules below refer to specific keys), but each stage's Label and SLA (days)
-// are admin-editable on the Masters page — see the "Stages / Pipeline"
-// master. STAGES is recomputed from DB via refreshStagesFromDB() at boot and
-// whenever the Stages master is saved.
-const STAGE_KEYS = ['new','contacted','site_visited','under_eval','doc_legal','negotiation','closed'];
+// The pipeline's FIRST stage ('new' — every new lead starts here) and LAST
+// stage ('closed' — terminal: no back-navigation out of it, unlocks Final
+// Price/Date, etc.) are structurally pinned, since other code refers to
+// those two keys specifically. Everything in between is admin-editable on
+// Status Config: stages can be renamed, added, removed and reordered there,
+// as long as New stays first and Closed stays last. STAGE_KEYS/STAGES are
+// recomputed from DB via refreshStagesFromDB() at boot and whenever Status
+// Config is saved.
+let STAGE_KEYS = ['new','contacted','site_visited','under_eval','doc_legal','negotiation','closed'];
 const DEFAULT_STAGE_CONFIG = [
   { key:'new',            label:'New',                    sla:2  },
   { key:'contacted',      label:'Contacted',               sla:7  },
@@ -255,13 +258,24 @@ const DEFAULT_STAGE_CONFIG = [
 let STAGES = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
 let STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
 const stageLabel = k => (STAGES.find(s=>s.key===k)||{}).label || k;
+// Turns a new stage's Label into a stable, unique key (e.g. "Site Re-Visit"
+// -> "site_re_visit"), avoiding collisions with existing keys.
+function slugifyStageKey(label, existingKeys){
+  let base = (label||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+  if(!base) base = 'stage';
+  let key = base, n = 2;
+  while(existingKeys.includes(key)){ key = base + '_' + n; n++; }
+  return key;
+}
 function refreshStagesFromDB(){
   const rows = (DB && DB.getStages) ? DB.getStages() : null;
-  STAGES = STAGE_KEYS.map(k=>{
-    const stored = rows && rows.find(r=>r.key===k);
-    const def = DEFAULT_STAGE_CONFIG.find(d=>d.key===k);
-    return { key:k, label: (stored && stored.label) || def.label, sla: stored && stored.sla!=null ? stored.sla : def.sla };
-  });
+  // Stored rows are fully authoritative (Status Config always saves the
+  // complete, ordered stage list — including any added/removed/reordered
+  // rows), so their order and set of keys drive STAGE_KEYS directly. Only
+  // fall back to the shipped defaults when nothing has been saved yet.
+  const source = (rows && rows.length) ? rows : DEFAULT_STAGE_CONFIG;
+  STAGES = source.map(r => ({ key:r.key, label: r.label || r.key, sla: r.sla!=null ? r.sla : null }));
+  STAGE_KEYS = STAGES.map(s=>s.key);
   STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
 }
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
@@ -342,16 +356,19 @@ function visibleExecutives(){
 }
 
 // ---- Workflow config -------------------------------------------------------
-// Which role must approve a specific stage-to-stage transition (see
-// wireDetailTabEvents' advance-btn/back-btn handlers). Admin-editable on the
-// "Workflow Config" nav module as explicit From Status -> To Status pairs —
-// a gate applies only to that exact pair, in that direction (moving forward
-// into a stage and moving back out of it are gated separately). Only pairs
-// that are one pipeline step apart are offered in the editor, since those
-// are the only moves the app's Move-to/Move-back actions actually perform.
+// Role-wise From Status -> To Status mapping (like the "Entity Wise Role And
+// Status Mapping" screen): each row grants ONE specific role permission to
+// perform ONE specific From->To move (moving forward into a stage and
+// moving back out of it are separate rows). A From status can branch to
+// several To statuses, and the same From->To move can have several rows —
+// one per role allowed to perform it. Head can always approve every
+// transition regardless of what's configured here (top-level sign-off), the
+// same way it always could under the old rank-based rule. Only pairs that
+// are one pipeline step apart are offered in the editor, since those are
+// the only moves the app's Move-to/Move-back actions actually perform.
 const DEFAULT_WORKFLOW_CONFIG = [
-  { from:'doc_legal',   to:'negotiation', label:'Approve entry into Negotiation', minRole:'manager' },
-  { from:'negotiation', to:'closed',      label:'Approve Closing (Acquired)',     minRole:'admin' },
+  { from:'doc_legal',   to:'negotiation', role:'manager', label:'Approve entry into Negotiation' },
+  { from:'negotiation', to:'closed',      role:'admin',   label:'Approve Closing (Acquired)' },
 ];
 let WORKFLOW_CONFIG = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
 function defaultGateLabel(from, to){ return to==='closed' ? 'Approve Closing (Acquired)' : ('Approve ' + stageLabel(from) + ' → ' + stageLabel(to)); }
@@ -374,19 +391,32 @@ function refreshWorkflowFromDB(){
     .map(r => {
       // Back-compat: rows saved before From/To pairs existed only carried
       // {key,label,minRole}, meaning "approval required to enter `key` from
-      // whatever stage precedes it" — migrate those to an explicit pair.
+      // whatever stage precedes it" — migrate those to an explicit pair, and
+      // rows saved before the role-wise rework carried `minRole` instead of
+      // `role` — same field, new name.
       let from = r.from, to = r.to || r.key;
       if(!from && to){
         const toIdx = STAGE_INDEX[to];
         from = (toIdx > 0) ? STAGE_KEYS[toIdx-1] : null;
       }
-      return { from, to, label: r.label || (from && to ? defaultGateLabel(from, to) : ''), minRole: r.minRole || 'admin' };
+      return { from, to, label: r.label || (from && to ? defaultGateLabel(from, to) : ''), role: r.role || r.minRole || 'admin' };
     })
     .filter(r => r.from && r.to && validPairs.some(p => p.from===r.from && p.to===r.to));
 }
-function findGate(fromKey, toKey){ return WORKFLOW_CONFIG.find(w => w.from===fromKey && w.to===toKey); }
-function isGatedTransition(fromKey, toKey){ return !!findGate(fromKey, toKey); }
-function roleMeetsGate(role, minRole){ return (ROLE_RANK[role]||0) >= (ROLE_RANK[minRole]||99); }
+// A From->To move can have several rows (one per permitted role) — this
+// returns all of them for that exact directional pair.
+function findGates(fromKey, toKey){ return WORKFLOW_CONFIG.filter(w => w.from===fromKey && w.to===toKey); }
+function findGate(fromKey, toKey){ return findGates(fromKey, toKey)[0]; }
+function isGatedTransition(fromKey, toKey){ return findGates(fromKey, toKey).length > 0; }
+// Head ('admin') is always allowed, matching its old top-of-rank status;
+// every other role must have an explicit row for this exact From->To move.
+function roleAllowedForGate(role, fromKey, toKey){
+  const gates = findGates(fromKey, toKey);
+  if(!gates.length) return true;
+  if(role === 'admin') return true;
+  return gates.some(g => g.role === role);
+}
+function gateRoleLabels(fromKey, toKey){ return findGates(fromKey, toKey).map(g=>ROLE_LABELS[g.role]).join(', '); }
 
 // ---- Lead field configuration (drives the New Lead form + list filters) ----
 // Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
@@ -964,16 +994,23 @@ function showLoginScreen(errorMsg){
       <div class="auth-card">
         <h1>Land Leads ERP</h1>
         <div class="sub">MP Developers — sign in to continue</div>
+        <form id="auth-form">
         <label>Email</label><input type="email" id="auth-email" autocomplete="username">
         <label>Password</label><input type="password" id="auth-password" autocomplete="current-password">
         ${errorMsg ? `<div class="auth-error">${errorMsg}</div>` : ''}
-        <button class="btn btn-teal" id="auth-login-btn">Sign In</button>
+        <button class="btn btn-teal" id="auth-login-btn" type="submit">Sign In</button>
+        </form>
         <div style="text-align:center;margin-top:14px;font-size:12px;"><a href="#" id="auth-forgot" style="color:var(--teal);">Forgot password?</a></div>
         <div style="text-align:center;margin-top:8px;font-size:12px;"><a href="#" id="auth-bootstrap-link" style="color:var(--muted);">Setting this up for the first time? Create the admin account</a></div>
         ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>Saravanan@mpdevelopers.com</b> / 123456 (Admin), <b>manager@demo.local</b> / manager123 (Manager), or <b>karthik@demo.local</b> / exec123 (Executive).</p>` : ''}
       </div>
     </div>`;
-  document.getElementById('auth-login-btn').onclick = async () => {
+  // A real <form> with a type="submit" button means both clicking Sign In
+  // AND pressing Enter in either field submit the same way (native browser
+  // behavior) — no separate keydown listener needed, and no risk of it
+  // firing twice.
+  document.getElementById('auth-form').onsubmit = async (e) => {
+    e.preventDefault();
     const email = document.getElementById('auth-email').value.trim();
     const password = document.getElementById('auth-password').value;
     if(!email || !password){ showLoginScreen('Enter both email and password.'); return; }
@@ -1777,6 +1814,11 @@ function wireUsersEvents(){
 // are the only moves the app's Move-to/Move-back actions can perform. Pairs
 // with no gate can be moved by anyone with edit access. Edits here are a
 // local draft — nothing is saved until "Save Workflow Config" is clicked.
+// Role-wise mapping table — same shape as the "Entity Wise Role And Status
+// Mapping" reference: Delete | Application Role | From Status | To Status,
+// with an "Add New" row and multiple rows allowed per From/To pair (one per
+// role permitted to perform that move) or per role (branching to several
+// To statuses from the same From status).
 let workflowDraftRows = null;
 function workflowDraft(){
   if(!workflowDraftRows) workflowDraftRows = WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
@@ -1784,27 +1826,25 @@ function workflowDraft(){
 }
 function renderWorkflowView(){
   const draft = workflowDraft();
-  const availablePairs = adjacentTransitionPairs().filter(p => !draft.some(w=>w.from===p.from && w.to===p.to));
+  const allPairs = adjacentTransitionPairs();
   const rows = draft.map((w,i)=>`<tr>
+      <td><button class="btn btn-sm btn-ghost" data-wf-remove="${i}" title="Delete">🗑</button></td>
+      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
       <td>${stageLabel(w.from)}</td>
-      <td style="text-align:center;color:var(--muted);">→</td>
       <td>${stageLabel(w.to)}</td>
-      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.minRole===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
-      <td><button class="btn btn-sm btn-ghost" data-wf-remove="${i}">Remove</button></td>
     </tr>`).join('');
   return `
     <div class="page-header"><h1>Workflow Config</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Sets the minimum role required to approve a specific From Status → To Status move — see a lead's Stage &amp; Actions section under Progress Details. Pairs with no gate below can be moved by anyone with edit access.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Role-wise From Status → To Status mapping — each row grants one role permission to perform one specific move (see a lead's Stage &amp; Actions section under Progress Details). A move with no row below can be performed by anyone with edit access. Head can always approve any move regardless of what's configured here.</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
-      <table><tr><th>From Status</th><th></th><th>To Status</th><th>Minimum Approver Role</th><th></th></tr>${rows || '<tr><td colspan="5" style="color:var(--muted);padding:14px;">No gates configured — anyone with edit access can move a lead to any adjacent stage.</td></tr>'}</table>
+      <table><tr><th></th><th>Application Role</th><th>From Status</th><th>To Status</th></tr>${rows || '<tr><td colspan="4" style="color:var(--muted);padding:14px;">No mappings configured — anyone with edit access can move a lead to any adjacent stage.</td></tr>'}</table>
     </div>
-    ${availablePairs.length ? `
     <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
-      <div><label>From Status → To Status</label><select id="wf-add-pair">${availablePairs.map(p=>`<option value="${p.from}::${p.to}">${stageLabel(p.from)} → ${stageLabel(p.to)}</option>`).join('')}</select></div>
-      <div><label>Minimum Approver Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}">${ROLE_LABELS[r]}</option>`).join('')}</select></div>
-      <button class="btn btn-sm btn-teal" id="wf-add-btn">+ Add Gate</button>
-    </div>` : `<p style="font-size:12.5px;color:var(--muted);">Every adjacent move already has a gate — remove one above to free it up.</p>`}
-    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Save Workflow Config</button></div>
+      <div><label>Application Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}">${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+      <div><label>From Status → To Status</label><select id="wf-add-pair">${allPairs.map(p=>`<option value="${p.from}::${p.to}">${stageLabel(p.from)} → ${stageLabel(p.to)}</option>`).join('')}</select></div>
+      <button class="btn btn-sm btn-teal" id="wf-add-btn">+ Add New</button>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="workflow-save">Update</button></div>
   `;
 }
 
@@ -1816,14 +1856,19 @@ function wireWorkflowEvents(){
   const addBtn = document.getElementById('wf-add-btn');
   if(addBtn) addBtn.onclick = () => {
     const [from, to] = document.getElementById('wf-add-pair').value.split('::');
-    const minRole = document.getElementById('wf-add-role').value;
-    workflowDraft().push({ from, to, label: defaultGateLabel(from, to), minRole });
+    const role = document.getElementById('wf-add-role').value;
+    const draft = workflowDraft();
+    if(draft.some(w=>w.from===from && w.to===to && w.role===role)){
+      alert(ROLE_LABELS[role] + ' already has a mapping for ' + stageLabel(from) + ' → ' + stageLabel(to) + '.');
+      return;
+    }
+    draft.push({ from, to, label: defaultGateLabel(from, to), role });
     render();
   };
   const saveBtn = document.getElementById('workflow-save');
   if(saveBtn) saveBtn.onclick = async () => {
     const rows = workflowDraft().map((w,i)=>({
-      from: w.from, to: w.to, label: w.label, minRole: document.getElementById('wf-role-'+i).value,
+      from: w.from, to: w.to, label: w.label, role: document.getElementById('wf-role-'+i).value,
     }));
     await DB.saveWorkflow(rows);
     workflowDraftRows = null;
@@ -1833,39 +1878,95 @@ function wireWorkflowEvents(){
 }
 
 // ---- STATUS CONFIG (own module) --------------------------------------------
-// The seven pipeline stages are structurally fixed (workflow rules refer to
-// specific stage keys, and every lead's history refers to them), so this
-// only lets Sara rename each stage and adjust its SLA (days) — no
-// add/delete/reorder, unlike the plain Masters.
+// New (the starting stage for every lead) and Closed (terminal — unlocks
+// Final Price/Date, blocks back-navigation) stay pinned first/last since
+// other code refers to those two keys specifically. Everything between them
+// can be renamed, added, removed and reordered. Changes are staged in a
+// draft (mirroring the Workflow Config editor) and only take effect on Save.
+let statusDraftRows = null;
+function statusDraft(){
+  if(!statusDraftRows) statusDraftRows = STAGES.map(s=>Object.assign({}, s));
+  return statusDraftRows;
+}
 function renderStatusConfigView(){
-  const rows = STAGES.map((s,i)=>`<tr>
+  const draft = statusDraft();
+  const rows = draft.map((s,i)=>{
+    const pinned = i===0 || i===draft.length-1; // New (first) / Closed (last)
+    return `<tr>
       <td>${s.key}</td>
       <td><input type="text" id="stg-label-${i}" value="${s.label}"></td>
       <td><input type="number" id="stg-sla-${i}" value="${s.sla==null?'':s.sla}" placeholder="none" style="max-width:100px;"></td>
-    </tr>`).join('');
+      <td style="white-space:nowrap;">
+        <button class="btn btn-sm btn-ghost" data-stg-up="${i}" ${i<=1?'disabled':''} title="Move up">↑</button>
+        <button class="btn btn-sm btn-ghost" data-stg-down="${i}" ${i>=draft.length-2?'disabled':''} title="Move down">↓</button>
+      </td>
+      <td>${pinned ? '' : `<button class="btn btn-sm btn-ghost" data-stg-remove="${i}">Remove</button>`}</td>
+    </tr>`;
+  }).join('');
   return `
     <div class="page-header"><h1>Status Config</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">The stage sequence itself is fixed by the workflow rules (approvals, SLA ageing, lead history all refer to it) — you can rename each stage and adjust its SLA, but stages can't be added, removed, or reordered here.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Rename any stage, adjust its SLA, add new stages, remove ones you don't need, or reorder them. "New" always stays the first stage and "Closed" always stays the last (the workflow rules and every lead's history rely on those two).</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr><th>Key</th><th>Label</th><th>SLA (days)</th></tr>
+        <tr><th>Key</th><th>Label</th><th>SLA (days)</th><th>Reorder</th><th></th></tr>
         ${rows}
       </table>
+    </div>
+    <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
+      <div><label>New Status Label</label><input type="text" id="stg-new-label" placeholder="e.g. Site Re-Visit"></div>
+      <button class="btn btn-sm btn-teal" id="stg-add-btn">+ Add Status</button>
+      <span style="font-size:12px;color:var(--muted);">Inserted just before Closed.</span>
     </div>
     <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="stages-save">Save Status Config</button></div>
   `;
 }
 
 function wireStatusConfigEvents(){
+  document.querySelectorAll('[data-stg-remove]').forEach(b=>b.onclick = () => {
+    const i = parseInt(b.dataset.stgRemove, 10);
+    const draft = statusDraft();
+    const key = draft[i].key;
+    const inUse = (DB.getLeads()||[]).some(l=>l.stage===key);
+    if(inUse){ alert('Some leads are currently in "' + draft[i].label + '". Move those leads to another stage before removing it.'); return; }
+    if(!confirm('Remove the "' + draft[i].label + '" status? This can\'t be undone.')) return;
+    draft.splice(i, 1);
+    render();
+  });
+  document.querySelectorAll('[data-stg-up]').forEach(b=>b.onclick = () => {
+    const i = parseInt(b.dataset.stgUp, 10);
+    if(i<=1) return;
+    const draft = statusDraft();
+    [draft[i-1], draft[i]] = [draft[i], draft[i-1]];
+    render();
+  });
+  document.querySelectorAll('[data-stg-down]').forEach(b=>b.onclick = () => {
+    const i = parseInt(b.dataset.stgDown, 10);
+    const draft = statusDraft();
+    if(i>=draft.length-2) return;
+    [draft[i+1], draft[i]] = [draft[i], draft[i+1]];
+    render();
+  });
+  const addBtn = document.getElementById('stg-add-btn');
+  if(addBtn) addBtn.onclick = () => {
+    const label = (document.getElementById('stg-new-label').value || '').trim();
+    if(!label){ alert('Enter a label for the new status.'); return; }
+    const draft = statusDraft();
+    const key = slugifyStageKey(label, draft.map(s=>s.key));
+    draft.splice(draft.length-1, 0, { key, label, sla: null }); // just before Closed
+    render();
+  };
   const saveBtn = document.getElementById('stages-save');
   if(saveBtn) saveBtn.onclick = async () => {
-    const rows = STAGES.map((s,i)=>({
+    const draft = statusDraft();
+    const rows = draft.map((s,i)=>({
       key: s.key,
       label: (document.getElementById('stg-label-'+i).value || s.label).trim(),
       sla: document.getElementById('stg-sla-'+i).value === '' ? null : parseInt(document.getElementById('stg-sla-'+i).value,10),
     }));
     await DB.saveStages(rows);
+    statusDraftRows = null;
     refreshStagesFromDB();
+    refreshWorkflowFromDB(); // drop any gates whose pair no longer exists
     render();
   };
 }
@@ -2115,15 +2216,15 @@ function renderOverviewTab(l){
 // for that exact pair (see the Workflow Config module).
 function renderTransitionBlock(fromKey, target, direction, l){
   if(!target) return '';
-  const gate = findGate(fromKey, target.key);
+  const gated = isGatedTransition(fromKey, target.key);
   const isClosing = direction==='forward' && target.key==='closed';
   const btnId = direction==='forward' ? 'advance-btn' : 'back-btn';
   const btnClass = direction==='forward' ? 'btn-teal' : 'btn-ghost';
   const btnLabel = isClosing ? 'Close as Acquired' : (direction==='forward' ? `Move to ${target.label}` : `Move back to ${target.label}`);
-  if(!gate){
+  if(!gated){
     return `<div style="margin-bottom:14px;"><button class="btn btn-sm ${btnClass}" id="${btnId}">${btnLabel}</button></div>`;
   }
-  const canApprove = !currentUser || roleMeetsGate(currentUser.role, gate.minRole);
+  const canApprove = !currentUser || roleAllowedForGate(currentUser.role, fromKey, target.key);
   const legend = isClosing ? 'Gate: Sign-off to close as Acquired' : `Gate: Approval to move ${direction==='forward'?'into':'back to'} ${target.label}`;
   const approverId = direction==='forward' ? 'gate-approver-fwd' : 'gate-approver-back';
   const remarksId = direction==='forward' ? 'gate-remarks-fwd' : 'gate-remarks-back';
@@ -2138,7 +2239,7 @@ function renderTransitionBlock(fromKey, target, direction, l){
       <div><label>Remarks</label><input type="text" id="${remarksId}"></div>
     </div>
     <button class="btn btn-sm btn-teal" id="${btnId}" style="margin-top:8px;">${btnLabel}</button>
-    ` : `<p style="font-size:12.5px;color:var(--muted);">Only a ${ROLE_LABELS[gate.minRole]} or higher can approve this transition (see Workflow Config).</p>`}
+    ` : `<p style="font-size:12.5px;color:var(--muted);">Only ${gateRoleLabels(fromKey, target.key)} (or Head) can approve this transition (see Workflow Config).</p>`}
   </fieldset>`;
 }
 
@@ -2257,17 +2358,17 @@ function wireDetailTabEvents(l){
     if(advance) advance.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const next = STAGES[idx+1];
-      const gate = findGate(l.stage, next.key);
-      if(gate && currentUser && !roleMeetsGate(currentUser.role, gate.minRole)){
-        alert('Only a ' + ROLE_LABELS[gate.minRole] + ' or higher can approve this transition.'); return;
+      const gated = isGatedTransition(l.stage, next.key);
+      if(gated && currentUser && !roleAllowedForGate(currentUser.role, l.stage, next.key)){
+        alert('Only ' + gateRoleLabels(l.stage, next.key) + ' (or Head) can approve this transition.'); return;
       }
       const approver = document.getElementById('gate-approver-fwd')?.value.trim();
-      if(gate && !approver){
+      if(gated && !approver){
         alert('An approver name is required for this transition.'); return;
       }
       const patch = { stage: next.key };
-      patch.stageHistory = (l.stageHistory||[]).concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='closed'?'Closed as Acquired':(gate?('Approved entry into '+next.label):'Advanced')}]);
-      if(gate){
+      patch.stageHistory = (l.stageHistory||[]).concat([{stage: next.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: next.key==='closed'?'Closed as Acquired':(gated?('Approved entry into '+next.label):'Advanced')}]);
+      if(gated){
         patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks-fwd')?.value.trim()||'' };
       }
       if(next.key==='closed'){
@@ -2282,17 +2383,17 @@ function wireDetailTabEvents(l){
     if(back) back.onclick = async () => {
       const idx = STAGE_INDEX[l.stage];
       const prev = STAGES[idx-1];
-      const gate = findGate(l.stage, prev.key);
-      if(gate && currentUser && !roleMeetsGate(currentUser.role, gate.minRole)){
-        alert('Only a ' + ROLE_LABELS[gate.minRole] + ' or higher can approve this transition.'); return;
+      const gated = isGatedTransition(l.stage, prev.key);
+      if(gated && currentUser && !roleAllowedForGate(currentUser.role, l.stage, prev.key)){
+        alert('Only ' + gateRoleLabels(l.stage, prev.key) + ' (or Head) can approve this transition.'); return;
       }
       const approver = document.getElementById('gate-approver-back')?.value.trim();
-      if(gate && !approver){
+      if(gated && !approver){
         alert('An approver name is required for this transition.'); return;
       }
       const patch = { stage: prev.key };
-      patch.stageHistory = (l.stageHistory||[]).concat([{stage:prev.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: gate ? ('Approved move back to '+prev.label) : 'Moved back a stage'}]);
-      if(gate){
+      patch.stageHistory = (l.stageHistory||[]).concat([{stage:prev.key, at:new Date().toISOString(), by: approver || l.assignedExecutive, note: gated ? ('Approved move back to '+prev.label) : 'Moved back a stage'}]);
+      if(gated){
         patch.approval = { approver, date: todayStr(), remarks: document.getElementById('gate-remarks-back')?.value.trim()||'' };
       }
       await DB.updateLead(l.id, patch);
@@ -2407,6 +2508,7 @@ function wireSidebarNav(){
         goToLeadsList({});
       } else {
         if(b.dataset.view==='workflow') workflowDraftRows = null; // discard any unsaved draft on fresh entry
+        if(b.dataset.view==='statusConfig') statusDraftRows = null;
         currentView = b.dataset.view;
         render();
       }
