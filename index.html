@@ -104,6 +104,14 @@
   .funnel-row .fbar-wrap{flex:1;background:#eceff3;border-radius:6px;overflow:hidden;height:22px;position:relative;}
   .funnel-row .fbar{background:linear-gradient(90deg,var(--teal),var(--navy));height:100%;border-radius:6px;}
   .funnel-row .fcount{width:34px;text-align:right;font-weight:700;color:var(--navy);}
+  .barchart{display:flex;align-items:flex-end;gap:8px;padding:10px 6px 0;}
+  .barchart .bar-col{flex:1;display:flex;flex-direction:column;align-items:center;cursor:pointer;min-width:0;padding:6px 2px;border-radius:6px;}
+  .barchart .bar-col:hover{background:#F6F8FB;}
+  .barchart .bar-value{font-size:12.5px;font-weight:700;color:var(--navy);margin-bottom:6px;font-variant-numeric:tabular-nums;}
+  .barchart .bar-track{width:100%;max-width:46px;height:150px;display:flex;align-items:flex-end;border-bottom:1px solid var(--border);}
+  .barchart .bar{width:100%;background:var(--teal);border-radius:4px 4px 0 0;min-height:2px;transition:background .15s;}
+  .barchart .bar-col:hover .bar{background:var(--navy);}
+  .barchart .bar-label{font-size:10.5px;color:var(--muted);margin-top:8px;text-align:center;line-height:1.25;}
   .board{display:flex;gap:12px;overflow-x:auto;padding-bottom:10px;}
   .col{background:#EAEDF2;border-radius:10px;padding:10px;min-width:250px;flex:0 0 250px;}
   .col-head{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:700;color:var(--navy);padding:4px 6px 10px;}
@@ -186,10 +194,11 @@
       <button data-view="reports">Reports</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
-      <div class="nav-group-label" id="admin-nav-label">Head</div>
+      <div class="nav-group-label" id="admin-nav-label">System</div>
       <button data-view="users">Manage Users</button>
       <button data-view="workflow">Workflow Config</button>
       <button data-view="statusConfig">Status Config</button>
+      <button data-view="pageAccess">Page Access</button>
     </nav>
     <div class="sidebar-foot" id="conn-badge"></div>
   </aside>
@@ -280,34 +289,71 @@ function refreshStagesFromDB(){
 }
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
 // Head (internal role key stays 'admin' for backward compatibility with
 // already-deployed accounts/data — only the display label changed, see
 // ROLE_LABELS): full system access (Masters/Configure/Manage Users/Workflow
-// Config/Status Config) plus workflow-gate approval at the top of the chain.
+// Config/Status Config/Page Access) plus workflow-gate approval at the top
+// of the chain, and can never be locked out of anything (see
+// refreshViewAccessFromDB()).
+// Admin (internal role key 'sysadmin' — distinct from Head's 'admin' key)
+// is a separate, non-hierarchical IT-admin-style role: system configuration
+// only (Manage Users/Workflow Config/Status Config/Page Access/Configure/
+// Masters), no lead-data pages by default, and not part of the Executive->
+// Manager->Head lead-visibility tree (no "Reports To"). Exactly which pages
+// each role — including this one — can open is controlled by the Page
+// Access master, editable at runtime; DEFAULT_VIEW_ACCESS below is only the
+// starting point.
 // Manager: all lead pages + can approve workflow gates, no Masters/Configure.
 // Executive: only their own assigned leads. See the "Manage Users" nav
 // module — every Manager/Head is assigned who they are the "Reports To"
 // for, which drives the lead-visibility tree below.
-const ROLES = ['admin','manager','executive'];
-const ROLE_LABELS = { admin:'Head', manager:'Manager', executive:'Executive' };
-const ROLE_RANK = { executive:1, manager:2, admin:3 };
-const VIEW_ACCESS = {
+const ROLES = ['admin','manager','executive','sysadmin'];
+const ROLE_LABELS = { admin:'Head', manager:'Manager', executive:'Executive', sysadmin:'Admin' };
+const ROLE_RANK = { executive:1, manager:2, admin:3, sysadmin:0 };
+// Shipped defaults for the Page Access master — one array of role keys per
+// page. Note this governs PAGE access only; it is a separate layer from the
+// Executive->Manager->Head lead-visibility tree above, which still decides
+// which LEADS a Manager/Head/Executive sees regardless of what's set here.
+const DEFAULT_VIEW_ACCESS = {
   dashboard: ['admin','manager','executive'],
   progress:  ['admin','manager','executive'],
   list:      ['admin','manager','executive'],
   newLead:   ['admin','manager','executive'],
   reports:   ['admin','manager'],
-  configure: ['admin'],
-  masters:   ['admin'],
-  users:       ['admin'],
-  workflow:    ['admin'],
-  statusConfig:['admin'],
+  configure: ['admin','sysadmin'],
+  masters:   ['admin','sysadmin'],
+  users:       ['admin','sysadmin'],
+  workflow:    ['admin','sysadmin'],
+  statusConfig:['admin','sysadmin'],
+  pageAccess:  ['admin','sysadmin'],
 };
+// The live, in-effect page access map — recomputed from DB via
+// refreshViewAccessFromDB() at boot, on every live DB change, and whenever
+// Page Access is saved. Starts as a plain copy of the defaults so the app
+// works before that first refresh runs.
+let VIEW_ACCESS = Object.fromEntries(Object.entries(DEFAULT_VIEW_ACCESS).map(([k,v])=>[k, v.slice()]));
 function canAccessView(view){ return !!(currentUser && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role)); }
+// Recomputes VIEW_ACCESS from whatever's saved on the Page Access master
+// (falling back to the shipped defaults for any page never saved yet).
+// Head ('admin') is force-included on every page no matter what was saved —
+// same "always allowed" precedent as Workflow Config gates — so Head can
+// never accidentally lock itself out of Page Access (or anything else).
+function refreshViewAccessFromDB(){
+  const rows = (DB && DB.getPageAccess) ? DB.getPageAccess() : null;
+  const source = (rows && rows.length) ? rows : Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles}));
+  const next = {};
+  KNOWN_VIEWS.forEach(view=>{
+    const row = source.find(r=>r.view===view);
+    const roles = (row && row.roles && row.roles.length) ? row.roles.slice() : (DEFAULT_VIEW_ACCESS[view] || []).slice();
+    if(!roles.includes('admin')) roles.push('admin');
+    next[view] = roles;
+  });
+  VIEW_ACCESS = next;
+}
 // ---- Lead visibility tree -------------------------------------------------
 // Leads >> Created & viewed by the Executive assigned to them >> viewed &
 // edited by that Executive's Manager (via the Executive's "Reports To") >>
@@ -564,6 +610,7 @@ class MemoryDB {
     this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
     this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+    this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
     this.users = DEFAULT_USERS_SEED.map(u=>Object.assign({ id:u.uid }, u));
   }
   async init(){ /* nothing to load — already seeded in memory */ }
@@ -585,6 +632,8 @@ class MemoryDB {
   async saveStages(rows){ this.stages = rows.map(r=>Object.assign({}, r)); }
   getWorkflow(){ return this.workflow; }
   async saveWorkflow(rows){ this.workflow = rows.map(r=>Object.assign({}, r)); }
+  getPageAccess(){ return this.pageAccess; }
+  async savePageAccess(rows){ this.pageAccess = rows.map(r=>({ view:r.view, roles:(r.roles||[]).slice() })); }
   // ---- Users & Access (demo-mode mock — plaintext password, memory-only) --
   getUsers(){ return this.users.filter(u=>u.active!==false); }
   getAllUsers(){ return this.users; }
@@ -618,9 +667,10 @@ class FirestoreDB {
     this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
     this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
+    this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
     this.users = [];
     this._onChange = null;
-    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
     this._readyResolvers = [];
   }
   onChange(cb){ this._onChange = cb; }
@@ -689,6 +739,17 @@ class FirestoreDB {
       if(this._onChange) this._onChange();
     }, err=>{ console.error('workflow listener error', err); this._markReady('workflow'); });
 
+    // One-time seed of the page access doc if it doesn't exist yet.
+    const paRef = this.fsdb.collection('settings').doc('pageAccess');
+    const paSnap = await paRef.get();
+    const defaultPageAccessRows = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles}));
+    if(!paSnap.exists){ await paRef.set({ rows: defaultPageAccessRows }); }
+    paRef.onSnapshot(snap=>{
+      this.pageAccess = (snap.data() && snap.data().rows) || defaultPageAccessRows;
+      this._markReady('pageAccess');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('pageAccess listener error', err); this._markReady('pageAccess'); });
+
     // Users are NOT auto-seeded — real accounts are created from the Users
     // & Access master (or the one-time "create admin" screen on first run),
     // since a Firestore doc alone can't create a working login.
@@ -750,6 +811,8 @@ class FirestoreDB {
   async saveStages(rows){ await this.fsdb.collection('settings').doc('stages').set({ rows }); }
   getWorkflow(){ return this.workflow; }
   async saveWorkflow(rows){ await this.fsdb.collection('settings').doc('workflow').set({ rows }); }
+  getPageAccess(){ return this.pageAccess; }
+  async savePageAccess(rows){ await this.fsdb.collection('settings').doc('pageAccess').set({ rows }); }
   // ---- Users & Access -------------------------------------------------
   getUsers(){ return this.users.filter(u=>u.active!==false); }
   getAllUsers(){ return this.users; }
@@ -819,7 +882,8 @@ async function boot(){
       DB.onChange(()=>{
         refreshStagesFromDB();
         refreshWorkflowFromDB();
-        if(currentUser) render();
+        refreshViewAccessFromDB();
+        if(currentUser){ applyRoleVisibility(); render(); }
         if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
       });
       // DB.init() (seeding + Firestore listeners) is deliberately NOT called
@@ -848,6 +912,7 @@ async function boot(){
   }
   refreshStagesFromDB();
   refreshWorkflowFromDB();
+  refreshViewAccessFromDB();
   initAuth();
 }
 
@@ -976,7 +1041,14 @@ function applyRoleVisibility(){
     b.style.display = allowed ? '' : 'none';
   });
   const adminLabel = document.getElementById('admin-nav-label');
-  if(adminLabel) adminLabel.style.display = currentUser.role==='admin' ? '' : 'none';
+  if(adminLabel){
+    // Shared by Head and the new Admin role — show the "System" group
+    // whenever the signed-in user can open at least one of the pages under
+    // it, rather than hardcoding a single role.
+    const systemViews = ['users','workflow','statusConfig','pageAccess'];
+    const hasSystemAccess = systemViews.some(v => VIEW_ACCESS[v] && VIEW_ACCESS[v].includes(currentUser.role));
+    adminLabel.style.display = hasSystemAccess ? '' : 'none';
+  }
 }
 
 function renderUserInfo(){
@@ -1127,6 +1199,7 @@ function render(){
   else if(currentView==='users') root.innerHTML = renderUsersView();
   else if(currentView==='workflow') root.innerHTML = renderWorkflowView();
   else if(currentView==='statusConfig') root.innerHTML = renderStatusConfigView();
+  else if(currentView==='pageAccess') root.innerHTML = renderPageAccessView();
   wireViewEvents();
 
   const wantedHash = '#' + currentView;
@@ -1213,18 +1286,48 @@ function leadMatchesFilters(l, f){
 function renderDashboard(){
   const leads = visibleLeads();
   const active = leads.filter(isActive);
-  const totalExtentAcre = active.reduce((s,l)=>s+leadExtentSqft(l),0) / 43560;
   const overdueCalls = leads.filter(l=>isActive(l) && l.nextCallDate && new Date(l.nextCallDate) < new Date(todayStr()));
   const dueToday = leads.filter(l=>isActive(l) && l.nextCallDate === todayStr());
   const ageingAlerts = active.filter(isOverdueStage);
   const onHoldCount = active.filter(l=>l.onHold && l.onHold.active).length;
 
-  const funnelRows = STAGES.map(s=>{
+  // Single-series magnitude-by-category chart (count of leads per stage) —
+  // one hue (teal), value labeled on each bar's cap, category labeled below;
+  // no legend needed for a single series. Stage counts drive bar height as a
+  // % of the fixed-height track, so this stays correct as stages are added/
+  // renamed/reordered on Status Config.
+  const stageMax = Math.max(1, ...STAGES.map(st=>leads.filter(l=>l.stage===st.key).length));
+  const barChartCols = STAGES.map(s=>{
     const count = leads.filter(l=>l.stage===s.key).length;
-    const max = Math.max(1, ...STAGES.map(st=>leads.filter(l=>l.stage===st.key).length));
-    const pct = Math.round((count/max)*100);
-    return `<div class="funnel-row" data-stage="${s.key}"><div class="flabel">${s.label}</div><div class="fbar-wrap"><div class="fbar" style="width:${pct}%"></div></div><div class="fcount">${count}</div></div>`;
+    const pct = Math.round((count/stageMax)*100);
+    return `<div class="bar-col" data-stage="${s.key}" title="${s.label}: ${count} lead${count===1?'':'s'}">
+      <div class="bar-value">${count}</div>
+      <div class="bar-track"><div class="bar" style="height:${pct}%"></div></div>
+      <div class="bar-label">${s.label}</div>
+    </div>`;
   }).join('');
+
+  // "New Leads" — every lead still sitting in the very first stage, newest
+  // first, with the date it was created.
+  const newLeadsList = leads.filter(l=>l.stage==='new').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,8).map(l=>
+    `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+      <span class="badge badge-navy">${fmtDate(l.createdAt)}</span></div>`
+  ).join('') || '<div class="empty">No new leads yet</div>';
+
+  // "Yet to be Site Visited" — leads sitting in whichever stage immediately
+  // precedes "Site Visited" (Contacted, by default), with the date each
+  // entered that stage. Resolved by key so it keeps working if that stage
+  // gets renamed or reordered on Status Config.
+  const siteVisitedIdx = STAGE_KEYS.indexOf('site_visited');
+  const preSiteVisitKey = siteVisitedIdx > 0 ? STAGE_KEYS[siteVisitedIdx-1] : null;
+  const yetToSiteVisitList = !preSiteVisitKey ? '<div class="empty">No "Site Visited" stage configured</div>' : (leads.filter(l=>l.stage===preSiteVisitKey).map(l=>{
+    const history = l.stageHistory || [];
+    const enteredAt = history.length ? history[history.length-1].at : l.createdAt;
+    return { l, enteredAt };
+  }).sort((a,b)=>new Date(a.enteredAt)-new Date(b.enteredAt)).slice(0,8).map(({l,enteredAt})=>
+    `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+      <span class="badge badge-warn">${fmtDate(enteredAt)}</span></div>`
+  ).join('') || '<div class="empty">No leads currently waiting on a site visit</div>');
 
   const bySource = {};
   leads.forEach(l=>{ bySource[l.leadSource||'—']=(bySource[l.leadSource||'—']||0)+1; });
@@ -1255,13 +1358,23 @@ function renderDashboard(){
 
     <div class="grid cards4">
       <div class="card stat" data-drill="active"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total incl. closed — click to view</div></div>
-      <div class="card stat" data-drill="active"><div class="label">Active Extent</div><div class="value">${fmtNum(totalExtentAcre)}</div><div class="sub">acres (approx., normalized) — click to view</div></div>
       <div class="card stat" data-drill="onHold"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">flagged across all stages — click to view</div></div>
       <div class="card stat" data-drill="calls"><div class="label">Calls Due / Overdue</div><div class="value" style="color:${overdueCalls.length?'var(--danger)':'var(--navy)'}">${dueToday.length} / ${overdueCalls.length}</div><div class="sub">today / overdue — click to view</div></div>
     </div>
 
     <h2 class="section-title">Pipeline Funnel <span class="tag">click a stage to view its leads</span></h2>
-    <div class="card">${funnelRows}</div>
+    <div class="card"><div class="barchart">${barChartCols}</div></div>
+
+    <div class="two-col">
+      <div>
+        <h2 class="section-title">New Leads</h2>
+        <div class="card">${newLeadsList}</div>
+      </div>
+      <div>
+        <h2 class="section-title">Yet to be Site Visited</h2>
+        <div class="card">${yetToSiteVisitList}</div>
+      </div>
+    </div>
 
     <div class="two-col">
       <div>
@@ -1731,7 +1844,7 @@ function renderUsersView(){
   }).join('') || `<tr><td colspan="7" class="empty">No users yet.</td></tr>`;
 
   const roleForForm = editing ? editing.role : ROLES[0];
-  const reportsToHidden = roleForForm==='admin';
+  const reportsToHidden = roleForForm==='admin' || roleForForm==='sysadmin';
 
   return `
     <div class="page-header"><h1>Manage Users</h1></div>
@@ -1776,7 +1889,7 @@ function wireUsersEvents(){
     const role = roleSelect.value;
     const wrap = document.getElementById('uf-reports-to-wrap');
     const sel = document.getElementById('uf-reports-to');
-    if(role==='admin'){
+    if(role==='admin' || role==='sysadmin'){
       wrap.style.display = 'none';
     } else {
       wrap.style.display = '';
@@ -1789,7 +1902,7 @@ function wireUsersEvents(){
     const email = document.getElementById('uf-email').value.trim();
     const phone = document.getElementById('uf-phone').value.trim();
     const role = document.getElementById('uf-role').value;
-    const reportsTo = role==='admin' ? '' : (document.getElementById('uf-reports-to')?.value || '');
+    const reportsTo = (role==='admin' || role==='sysadmin') ? '' : (document.getElementById('uf-reports-to')?.value || '');
     if(!name){ alert('Name is required.'); return; }
     if(editingMasterId){
       await DB.updateUser(editingMasterId, { name, phone, role, reportsTo });
@@ -2001,6 +2114,65 @@ function wireStatusConfigEvents(){
     statusDraftRows = null;
     refreshStagesFromDB();
     refreshWorkflowFromDB(); // drop any gates whose pair no longer exists
+    render();
+  };
+}
+
+// ---- PAGE ACCESS (own module) ----------------------------------------------
+// One shared, per-role checklist of which pages/nav items each role can
+// open — this is a separate, independent layer from the Executive->Manager->
+// Head lead-visibility tree (see visibleLeads()/reportsToCandidates() above):
+// Page Access decides which PAGES a role can see; "Reports To" still decides
+// which LEADS a Manager/Head sees once they're on a lead page. Edits here
+// are a local draft — nothing is saved until "Save Page Access" is clicked,
+// same pattern as Workflow/Status Config. Head's ('admin') checkboxes are
+// always checked and disabled so Head can never accidentally lock itself
+// out of Page Access (or anything else) — mirrors the "Head always allowed"
+// rule already used for Workflow Config gates.
+let pageAccessDraftRows = null;
+function pageAccessDraft(){
+  if(!pageAccessDraftRows){
+    pageAccessDraftRows = KNOWN_VIEWS.map(view => ({
+      view,
+      roles: (VIEW_ACCESS[view] || DEFAULT_VIEW_ACCESS[view] || []).slice(),
+    }));
+  }
+  return pageAccessDraftRows;
+}
+function renderPageAccessView(){
+  const draft = pageAccessDraft();
+  const rows = draft.map((r,i)=>`<tr>
+      <td>${PAGE_TITLES[r.view] || r.view}</td>
+      ${ROLES.map(role=>`<td style="text-align:center;">
+        <input type="checkbox" data-pa-idx="${i}" data-pa-role="${role}" ${r.roles.includes(role) ? 'checked' : ''} ${role==='admin' ? 'disabled title="Head always has access"' : ''}>
+      </td>`).join('')}
+    </tr>`).join('');
+  return `
+    <div class="page-header"><h1>Page Access</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Tick which roles can open each page/nav item. This controls page access only — it does not change which leads a Manager or Head can see; that's still driven by "Reports To" under Manage Users. Head always has access to every page and can't be unchecked here, so Head can never get locked out.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table><tr><th>Page</th>${ROLES.map(role=>`<th>${ROLE_LABELS[role]}</th>`).join('')}</tr>${rows}</table>
+    </div>
+    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="page-access-save">Save Page Access</button></div>
+  `;
+}
+function wirePageAccessEvents(){
+  document.querySelectorAll('[data-pa-idx]').forEach(cb=>cb.addEventListener('change', () => {
+    const i = parseInt(cb.dataset.paIdx, 10);
+    const role = cb.dataset.paRole;
+    const draft = pageAccessDraft();
+    const set = new Set(draft[i].roles);
+    if(cb.checked) set.add(role); else set.delete(role);
+    set.add('admin'); // Head can never be unchecked, even by tampering with the DOM
+    draft[i].roles = Array.from(set);
+  }));
+  const saveBtn = document.getElementById('page-access-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const rows = pageAccessDraft().map(r=>({ view:r.view, roles:r.roles.slice() }));
+    await DB.savePageAccess(rows);
+    pageAccessDraftRows = null;
+    refreshViewAccessFromDB();
+    applyRoleVisibility();
     render();
   };
 }
@@ -2550,6 +2722,7 @@ function wireViewEvents(){
   if(currentView==='users'){ wireUsersEvents(); }
   if(currentView==='workflow'){ wireWorkflowEvents(); }
   if(currentView==='statusConfig'){ wireStatusConfigEvents(); }
+  if(currentView==='pageAccess'){ wirePageAccessEvents(); }
 }
 
 // ---- Sidebar navigation ---------------------------------------------------
@@ -2562,6 +2735,7 @@ function wireSidebarNav(){
       } else {
         if(b.dataset.view==='workflow'){ workflowDraftRows = null; workflowAddRole = null; workflowAddFrom = null; workflowAddTo = null; } // discard any unsaved draft on fresh entry
         if(b.dataset.view==='statusConfig') statusDraftRows = null;
+        if(b.dataset.view==='pageAccess') pageAccessDraftRows = null;
         currentView = b.dataset.view;
         render();
       }
