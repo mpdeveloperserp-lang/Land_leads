@@ -374,6 +374,20 @@ function isInHeadBranch(headUid, execName){
   const mgr = userByUid(exec.reportsTo);
   return !!(mgr && mgr.reportsTo === headUid);
 }
+// Safety net for a MID-tree gap: the Executive's Manager account exists (so
+// isInHeadBranch's own "manager missing entirely" case doesn't apply) but
+// that Manager hasn't been given a "Reports To" yet, so their whole branch
+// isn't linked under any Head. Without this, that branch would be invisible
+// to every Head — not just the wrong one — until someone notices the gap.
+// Every Head sees it as a safety net (matches the "nothing goes silently
+// missing while the hierarchy is configured" note below); once the Manager
+// gets a Reports To, normal isInHeadBranch scoping takes back over.
+function hasOrphanedManagerChain(execName){
+  const exec = userByName(execName);
+  if(!exec || !exec.reportsTo) return false;
+  const mgr = userByUid(exec.reportsTo);
+  return !!(mgr && !mgr.reportsTo);
+}
 function visibleLeads(){
   const all = DB.getLeads();
   if(!currentUser) return [];
@@ -381,6 +395,7 @@ function visibleLeads(){
   if(currentUser.role==='manager') return all.filter(l=>isDirectReport(currentUser.uid, l.assignedExecutive));
   if(currentUser.role==='admin'){
     return all.filter(l => isInHeadBranch(currentUser.uid, l.assignedExecutive)
+      || hasOrphanedManagerChain(l.assignedExecutive)
       // Safety net: a lead whose Assigned Executive doesn't match any real
       // user account (legacy data, unassigned, or the reporting tree not
       // set up yet) has nowhere else to surface — Head still sees these so
@@ -397,7 +412,7 @@ function visibleExecutives(){
   if(!currentUser) return [];
   if(currentUser.role==='executive') return all.filter(u=>u.name===currentUser.name);
   if(currentUser.role==='manager') return all.filter(u=>isDirectReport(currentUser.uid, u.name));
-  if(currentUser.role==='admin') return all.filter(u=>isInHeadBranch(currentUser.uid, u.name) || !u.reportsTo);
+  if(currentUser.role==='admin') return all.filter(u=>isInHeadBranch(currentUser.uid, u.name) || hasOrphanedManagerChain(u.name) || !u.reportsTo);
   return all;
 }
 
@@ -542,7 +557,17 @@ const DEFAULT_USERS_SEED = [
 
 const fmtINR = n => n==null||isNaN(n) ? '—' : '₹' + Math.round(n).toLocaleString('en-IN');
 const fmtNum = n => n==null||isNaN(n) ? '—' : Number(n).toLocaleString('en-IN', {maximumFractionDigits:1});
-const fmtDate = d => { if(!d) return '—'; const dt = new Date(d); return isNaN(dt) ? d : dt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}); };
+// Firestore's serverTimestamp() fields come back live as Firestore Timestamp
+// objects (not a Date/ISO string) — those carry a toDate() method, so unwrap
+// with it before parsing; otherwise `new Date(...)` fails and used to leak
+// the raw object's toString() ("Timestamp(seconds=..., nanoseconds=...)")
+// straight into the UI.
+const fmtDate = d => {
+  if(!d) return '—';
+  const raw = (typeof d === 'object' && typeof d.toDate === 'function') ? d.toDate() : d;
+  const dt = new Date(raw);
+  return isNaN(dt) ? '—' : dt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+};
 const daysBetween = (a,b) => Math.floor((b-a)/86400000);
 const todayStr = () => new Date().toISOString().slice(0,10);
 const uid = p => p + '-' + Math.random().toString(36).slice(2,7).toUpperCase();
@@ -1308,26 +1333,24 @@ function renderDashboard(){
   }).join('');
 
   // "New Leads" — every lead still sitting in the very first stage, newest
-  // first, with the date it was created.
+  // first, with the date it was created. Clicking a row goes to the same
+  // place as the dashboard's other drill-throughs — the All Leads page,
+  // filtered to just these — rather than opening that one lead's detail.
   const newLeadsList = leads.filter(l=>l.stage==='new').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,8).map(l=>
-    `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+    `<div class="callitem" data-drill="newLeads" style="cursor:pointer;"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
       <span class="badge badge-navy">${fmtDate(l.createdAt)}</span></div>`
   ).join('') || '<div class="empty">No new leads yet</div>';
 
-  // "Yet to be Site Visited" — leads sitting in whichever stage immediately
-  // precedes "Site Visited" (Contacted, by default), with the date each
-  // entered that stage. Resolved by key so it keeps working if that stage
-  // gets renamed or reordered on Status Config.
+  // "Yet to be Site Visited" — just the count of leads sitting in whichever
+  // stage immediately precedes "Site Visited" (Contacted, by default), not a
+  // per-lead list — click it to drill into that filtered list on All Leads.
+  // Resolved by key so it keeps working if that stage gets renamed or
+  // reordered on Status Config.
   const siteVisitedIdx = STAGE_KEYS.indexOf('site_visited');
   const preSiteVisitKey = siteVisitedIdx > 0 ? STAGE_KEYS[siteVisitedIdx-1] : null;
-  const yetToSiteVisitList = !preSiteVisitKey ? '<div class="empty">No "Site Visited" stage configured</div>' : (leads.filter(l=>l.stage===preSiteVisitKey).map(l=>{
-    const history = l.stageHistory || [];
-    const enteredAt = history.length ? history[history.length-1].at : l.createdAt;
-    return { l, enteredAt };
-  }).sort((a,b)=>new Date(a.enteredAt)-new Date(b.enteredAt)).slice(0,8).map(({l,enteredAt})=>
-    `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
-      <span class="badge badge-warn">${fmtDate(enteredAt)}</span></div>`
-  ).join('') || '<div class="empty">No leads currently waiting on a site visit</div>');
+  const yetToSiteVisitCount = preSiteVisitKey ? leads.filter(l=>l.stage===preSiteVisitKey).length : 0;
+  const yetToSiteVisitList = !preSiteVisitKey ? '<div class="empty">No "Site Visited" stage configured</div>' :
+    `<div class="callitem" data-drill="yetToSiteVisit" data-stage-key="${preSiteVisitKey}" style="cursor:pointer;"><span><b>${yetToSiteVisitCount}</b> lead${yetToSiteVisitCount===1?'':'s'} yet to be site visited</span><span class="badge badge-warn">View in All Leads</span></div>`;
 
   const bySource = {};
   leads.forEach(l=>{ bySource[l.leadSource||'—']=(bySource[l.leadSource||'—']||0)+1; });
@@ -2706,6 +2729,8 @@ function wireViewEvents(){
       if(d==='active') goToLeadsList({ excludeClosed:true });
       if(d==='onHold') goToLeadsList({ onHold:true });
       if(d==='calls') goToLeadsList({ excludeClosed:true, callDueOrOverdue:true });
+      if(d==='newLeads') goToLeadsList({ stage:'new' });
+      if(d==='yetToSiteVisit') goToLeadsList({ stage: el.dataset.stageKey });
     }));
     document.querySelectorAll('[data-stage]').forEach(el=>el.addEventListener('click', ()=>goToProgress(el.dataset.stage)));
     document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
