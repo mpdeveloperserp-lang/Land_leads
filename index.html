@@ -337,7 +337,23 @@ const DEFAULT_VIEW_ACCESS = {
 // Page Access is saved. Starts as a plain copy of the defaults so the app
 // works before that first refresh runs.
 let VIEW_ACCESS = Object.fromEntries(Object.entries(DEFAULT_VIEW_ACCESS).map(([k,v])=>[k, v.slice()]));
-function canAccessView(view){ return !!(currentUser && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role)); }
+// Per-USER page-access overrides, layered on top of the per-role VIEW_ACCESS
+// above. { [uid]: { [view]: true|false } } — only pages where a specific
+// person's access was explicitly ticked/unticked away from their role's
+// default appear here; everything else falls through to VIEW_ACCESS. See
+// refreshUserPageOverridesFromDB() and the "Per-User Overrides" section of
+// renderPageAccessView().
+let USER_PAGE_OVERRIDES = {};
+function canAccessView(view){
+  if(!currentUser) return false;
+  // Head ('admin') always has full access and can never be locked out — via
+  // the role grid (force-included below) or an override, same "always
+  // allowed" precedent as Workflow Config gates.
+  if(currentUser.role==='admin') return true;
+  const overrides = USER_PAGE_OVERRIDES[currentUser.uid];
+  if(overrides && Object.prototype.hasOwnProperty.call(overrides, view)) return !!overrides[view];
+  return !!(VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(currentUser.role));
+}
 // Recomputes VIEW_ACCESS from whatever's saved on the Page Access master
 // (falling back to the shipped defaults for any page never saved yet).
 // Head ('admin') is force-included on every page no matter what was saved —
@@ -354,6 +370,22 @@ function refreshViewAccessFromDB(){
     next[view] = roles;
   });
   VIEW_ACCESS = next;
+}
+// Recomputes USER_PAGE_OVERRIDES from whatever's saved on the per-user page
+// access overrides doc. Head accounts are skipped even if a stray row
+// exists for one (defense in depth — canAccessView() already short-circuits
+// true for Head regardless).
+function refreshUserPageOverridesFromDB(){
+  const rows = (DB && DB.getUserPageAccess) ? DB.getUserPageAccess() : null;
+  const next = {};
+  (rows||[]).forEach(r=>{
+    if(!r || !r.uid || !r.view) return;
+    const user = userByUid(r.uid);
+    if(user && user.role==='admin') return;
+    if(!next[r.uid]) next[r.uid] = {};
+    next[r.uid][r.view] = !!r.allowed;
+  });
+  USER_PAGE_OVERRIDES = next;
 }
 // ---- Lead visibility tree -------------------------------------------------
 // Leads >> Created & viewed by the Executive assigned to them >> viewed &
@@ -652,6 +684,7 @@ class MemoryDB {
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
     this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
     this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
+    this.userPageAccess = [];
     this.users = DEFAULT_USERS_SEED.map(u=>Object.assign({ id:u.uid }, u));
   }
   async init(){ /* nothing to load — already seeded in memory */ }
@@ -675,6 +708,8 @@ class MemoryDB {
   async saveWorkflow(rows){ this.workflow = rows.map(r=>Object.assign({}, r)); }
   getPageAccess(){ return this.pageAccess; }
   async savePageAccess(rows){ this.pageAccess = rows.map(r=>({ view:r.view, roles:(r.roles||[]).slice() })); }
+  getUserPageAccess(){ return this.userPageAccess; }
+  async saveUserPageAccess(rows){ this.userPageAccess = rows.map(r=>({ uid:r.uid, view:r.view, allowed: !!r.allowed })); }
   // ---- Users & Access (demo-mode mock — plaintext password, memory-only) --
   getUsers(){ return this.users.filter(u=>u.active!==false); }
   getAllUsers(){ return this.users; }
@@ -709,9 +744,10 @@ class FirestoreDB {
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
     this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
     this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
+    this.userPageAccess = [];
     this.users = [];
     this._onChange = null;
-    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'userPageAccess', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
     this._readyResolvers = [];
   }
   onChange(cb){ this._onChange = cb; }
@@ -791,6 +827,20 @@ class FirestoreDB {
       if(this._onChange) this._onChange();
     }, err=>{ console.error('pageAccess listener error', err); this._markReady('pageAccess'); });
 
+    // One-time seed of the per-user page-access overrides doc if it doesn't
+    // exist yet. Unlike pageAccess, there is no meaningful "default" here —
+    // an empty array means every user simply follows their role's default
+    // (see renderPageAccessView()'s "Per-User Overrides" section), so this
+    // doc only ever holds explicit differences from that role default.
+    const upaRef = this.fsdb.collection('settings').doc('userPageAccess');
+    const upaSnap = await upaRef.get();
+    if(!upaSnap.exists){ await upaRef.set({ rows: [] }); }
+    upaRef.onSnapshot(snap=>{
+      this.userPageAccess = (snap.data() && snap.data().rows) || [];
+      this._markReady('userPageAccess');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('userPageAccess listener error', err); this._markReady('userPageAccess'); });
+
     // Users are NOT auto-seeded — real accounts are created from the Users
     // & Access master (or the one-time "create admin" screen on first run),
     // since a Firestore doc alone can't create a working login.
@@ -854,6 +904,8 @@ class FirestoreDB {
   async saveWorkflow(rows){ await this.fsdb.collection('settings').doc('workflow').set({ rows }); }
   getPageAccess(){ return this.pageAccess; }
   async savePageAccess(rows){ await this.fsdb.collection('settings').doc('pageAccess').set({ rows }); }
+  getUserPageAccess(){ return this.userPageAccess; }
+  async saveUserPageAccess(rows){ await this.fsdb.collection('settings').doc('userPageAccess').set({ rows }); }
   // ---- Users & Access -------------------------------------------------
   getUsers(){ return this.users.filter(u=>u.active!==false); }
   getAllUsers(){ return this.users; }
@@ -924,6 +976,7 @@ async function boot(){
         refreshStagesFromDB();
         refreshWorkflowFromDB();
         refreshViewAccessFromDB();
+        refreshUserPageOverridesFromDB();
         if(currentUser){ applyRoleVisibility(); render(); }
         if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
       });
@@ -954,6 +1007,7 @@ async function boot(){
   refreshStagesFromDB();
   refreshWorkflowFromDB();
   refreshViewAccessFromDB();
+  refreshUserPageOverridesFromDB();
   initAuth();
 }
 
@@ -1078,7 +1132,9 @@ function enterApp(){
 
 function applyRoleVisibility(){
   document.querySelectorAll('#tabs > button[data-view]').forEach(b=>{
-    const allowed = VIEW_ACCESS[b.dataset.view] ? VIEW_ACCESS[b.dataset.view].includes(currentUser.role) : true;
+    // Routed through canAccessView() so a per-user override (not just the
+    // per-role grid) correctly shows/hides the sidebar nav button too.
+    const allowed = KNOWN_VIEWS.includes(b.dataset.view) ? canAccessView(b.dataset.view) : true;
     b.style.display = allowed ? '' : 'none';
   });
   const adminLabel = document.getElementById('admin-nav-label');
@@ -1087,7 +1143,7 @@ function applyRoleVisibility(){
     // whenever the signed-in user can open at least one of the pages under
     // it, rather than hardcoding a single role.
     const systemViews = ['users','workflow','statusConfig','pageAccess'];
-    const hasSystemAccess = systemViews.some(v => VIEW_ACCESS[v] && VIEW_ACCESS[v].includes(currentUser.role));
+    const hasSystemAccess = systemViews.some(v => canAccessView(v));
     adminLabel.style.display = hasSystemAccess ? '' : 'none';
   }
 }
@@ -2208,6 +2264,29 @@ function pageAccessDraft(){
   }
   return pageAccessDraftRows;
 }
+// Per-user overrides sit below the per-role grid: pick one person, tick/
+// untick specific pages for them alone, on top of whatever their role
+// defaults to above. Same local-draft-then-Save pattern; the draft resets
+// whenever the selected user changes (see wirePageAccessEvents()'s
+// pa-user-select handler and the sidebar-nav reset near wireSidebarNav()).
+// Head ('admin') accounts are excluded from the user dropdown entirely —
+// they already always have full access (see canAccessView()) and can't be
+// overridden.
+let pageAccessSelectedUserUid = '';
+let userOverrideDraftRows = null;
+function userOverrideDraft(uidVal){
+  if(!userOverrideDraftRows){
+    const user = userByUid(uidVal);
+    const overrides = USER_PAGE_OVERRIDES[uidVal] || {};
+    userOverrideDraftRows = KNOWN_VIEWS.map(view => ({
+      view,
+      allowed: Object.prototype.hasOwnProperty.call(overrides, view)
+        ? overrides[view]
+        : !!(user && VIEW_ACCESS[view] && VIEW_ACCESS[view].includes(user.role)),
+    }));
+  }
+  return userOverrideDraftRows;
+}
 function renderPageAccessView(){
   const draft = pageAccessDraft();
   const rows = draft.map((r,i)=>`<tr>
@@ -2216,13 +2295,54 @@ function renderPageAccessView(){
         <input type="checkbox" data-pa-idx="${i}" data-pa-role="${role}" ${r.roles.includes(role) ? 'checked' : ''} ${role==='admin' ? 'disabled title="Head always has access"' : ''}>
       </td>`).join('')}
     </tr>`).join('');
+
+  const nonHeadUsers = (DB.getUsers()||[]).filter(u=>u.role!=='admin');
+  const selUser = pageAccessSelectedUserUid ? userByUid(pageAccessSelectedUserUid) : null;
+  let userTableHtml = '';
+  if(selUser){
+    const oDraft = userOverrideDraft(selUser.uid);
+    const overrides = USER_PAGE_OVERRIDES[selUser.uid] || {};
+    const userRows = oDraft.map((r,i)=>{
+      const isOverridden = Object.prototype.hasOwnProperty.call(overrides, r.view);
+      const roleDefault = !!(VIEW_ACCESS[r.view] && VIEW_ACCESS[r.view].includes(selUser.role));
+      const status = isOverridden
+        ? `Overridden: ${r.allowed ? 'allowed' : 'blocked'}`
+        : `Default for ${ROLE_LABELS[selUser.role]} (${roleDefault ? 'allowed' : 'blocked'})`;
+      return `<tr>
+          <td>${PAGE_TITLES[r.view] || r.view}</td>
+          <td style="text-align:center;"><input type="checkbox" data-pu-idx="${i}" ${r.allowed ? 'checked' : ''}></td>
+          <td style="font-size:12px;color:var(--muted);">${status}</td>
+        </tr>`;
+    }).join('');
+    userTableHtml = `
+      <div style="overflow-x:auto;margin-top:10px;">
+        <table><tr><th>Page</th><th>Allowed</th><th>Status</th></tr>${userRows}</table>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm btn-teal" id="page-access-user-save">Save Overrides for ${selUser.name}</button>
+        <button class="btn btn-sm" id="page-access-user-clear">Clear All Overrides for ${selUser.name}</button>
+      </div>`;
+  }
+
   return `
     <div class="page-header"><h1>Page Access</h1></div>
     <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Tick which roles can open each page/nav item. This controls page access only — it does not change which leads a Manager or Head can see; that's still driven by "Reports To" under Manage Users. Head always has access to every page and can't be unchecked here, so Head can never get locked out.</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table><tr><th>Page</th>${ROLES.map(role=>`<th>${ROLE_LABELS[role]}</th>`).join('')}</tr>${rows}</table>
     </div>
-    <div style="margin-top:12px;"><button class="btn btn-sm btn-teal" id="page-access-save">Save Page Access</button></div>
+    <div style="margin-top:12px;margin-bottom:20px;"><button class="btn btn-sm btn-teal" id="page-access-save">Save Page Access</button></div>
+
+    <div class="card" style="padding:14px;margin-bottom:14px;">
+      <h3 style="margin:0 0 4px;">Per-User Overrides</h3>
+      <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">Override specific pages for one person, on top of their role's default above. Head accounts always have full access and aren't listed here.</p>
+      <label style="font-size:13px;">User:
+        <select id="pa-user-select">
+          <option value="">— select a user —</option>
+          ${nonHeadUsers.map(u=>`<option value="${u.uid}" ${u.uid===pageAccessSelectedUserUid ? 'selected' : ''}>${u.name} (${ROLE_LABELS[u.role]})</option>`).join('')}
+        </select>
+      </label>
+      ${userTableHtml}
+    </div>
   `;
 }
 function wirePageAccessEvents(){
@@ -2241,6 +2361,53 @@ function wirePageAccessEvents(){
     await DB.savePageAccess(rows);
     pageAccessDraftRows = null;
     refreshViewAccessFromDB();
+    applyRoleVisibility();
+    render();
+  };
+
+  const userSelect = document.getElementById('pa-user-select');
+  if(userSelect) userSelect.onchange = () => {
+    pageAccessSelectedUserUid = userSelect.value;
+    userOverrideDraftRows = null;
+    render();
+  };
+
+  document.querySelectorAll('[data-pu-idx]').forEach(cb=>cb.addEventListener('change', () => {
+    const i = parseInt(cb.dataset.puIdx, 10);
+    const draft = userOverrideDraft(pageAccessSelectedUserUid);
+    draft[i].allowed = cb.checked;
+  }));
+
+  const userSaveBtn = document.getElementById('page-access-user-save');
+  if(userSaveBtn) userSaveBtn.onclick = async () => {
+    const uidSel = pageAccessSelectedUserUid;
+    const user = userByUid(uidSel);
+    if(!user) return;
+    const draft = userOverrideDraft(uidSel);
+    // Diff each checkbox against that user's live role default at save
+    // time — only the pages that actually differ get stored as override
+    // rows, so a checkbox that happens to match the role default self-
+    // cleans instead of piling up as a redundant stored row.
+    const diffRows = draft
+      .filter(r => r.allowed !== !!(VIEW_ACCESS[r.view] && VIEW_ACCESS[r.view].includes(user.role)))
+      .map(r => ({ uid: uidSel, view: r.view, allowed: r.allowed }));
+    const existing = (DB.getUserPageAccess()||[]).filter(r=>r.uid!==uidSel);
+    await DB.saveUserPageAccess(existing.concat(diffRows));
+    userOverrideDraftRows = null;
+    refreshUserPageOverridesFromDB();
+    applyRoleVisibility();
+    render();
+  };
+
+  const userClearBtn = document.getElementById('page-access-user-clear');
+  if(userClearBtn) userClearBtn.onclick = async () => {
+    const uidSel = pageAccessSelectedUserUid;
+    const user = userByUid(uidSel);
+    if(!confirm(`Clear all page-access overrides for ${user ? user.name : 'this user'}? They will go back to their role's default access.`)) return;
+    const existing = (DB.getUserPageAccess()||[]).filter(r=>r.uid!==uidSel);
+    await DB.saveUserPageAccess(existing);
+    userOverrideDraftRows = null;
+    refreshUserPageOverridesFromDB();
     applyRoleVisibility();
     render();
   };
@@ -2806,7 +2973,7 @@ function wireSidebarNav(){
       } else {
         if(b.dataset.view==='workflow'){ workflowDraftRows = null; workflowAddRole = null; workflowAddFrom = null; workflowAddTo = null; } // discard any unsaved draft on fresh entry
         if(b.dataset.view==='statusConfig') statusDraftRows = null;
-        if(b.dataset.view==='pageAccess') pageAccessDraftRows = null;
+        if(b.dataset.view==='pageAccess'){ pageAccessDraftRows = null; pageAccessSelectedUserUid = ''; userOverrideDraftRows = null; }
         currentView = b.dataset.view;
         render();
       }
