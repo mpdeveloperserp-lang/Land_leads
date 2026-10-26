@@ -482,6 +482,58 @@ function visibleExecutives(){
   return all;
 }
 
+// ---- Channel Partner visibility (manager-wise, mirrors visibleLeads()) ---
+// Channel Partners are now stamped with who created them at creation time
+// (createdByUid/createdByName — see addMaster()'s trackOwner handling), so
+// the same Executive->Manager->Head reporting tree used for Leads can be
+// reused here, exactly as requested, instead of inventing a separate model.
+// Records created before this round (the two seeded partners, CP-007 and
+// CP-014, and anything added earlier) carry neither field. Rather than
+// hiding that pre-existing, already-in-use data from anyone — which would
+// silently break New Lead / Edit Details for every role the moment this
+// shipped — those untagged records are treated as shared, company-wide
+// resources and stay visible to everyone, same as before this round. This
+// is a deliberate default for the legacy-data gap the request didn't cover
+// either way; it can be tightened later (e.g. Head/Admin-only) if preferred.
+function cpCreator(cp){
+  if(cp.createdByUid){ const u = userByUid(cp.createdByUid); if(u) return u; }
+  if(cp.createdByName){ const u = userByName(cp.createdByName); if(u) return u; }
+  return null;
+}
+// Resolves the acceptance table's own hedged row ("Renju / CP created by
+// Gokul (her Manager) / follow existing manager-CP visibility rules"): a
+// Manager's own Channel Partners ARE visible to the Executives who report
+// to them, same as a Manager's own leads are already visible to their team
+// in spirit — a manager's shared contacts belong to the whole team they run.
+function canSeeCP(cp, user){
+  if(!user) return false;
+  if(user.role==='sysadmin') return true; // Admin — full visibility, same precedent as everywhere else
+  const creator = cpCreator(cp);
+  if(!creator) return true; // legacy/unowned — shared company resource, visible to all
+  if(creator.uid === user.uid) return true; // always see your own
+  if(user.role==='executive'){
+    if(creator.role==='executive') return creator.reportsTo === user.reportsTo; // teammate under the same Manager
+    if(creator.role==='manager')   return creator.uid === user.reportsTo;       // your own Manager
+    return false;
+  }
+  if(user.role==='manager'){
+    return creator.role==='executive' && creator.reportsTo === user.uid; // your reporting Executives
+  }
+  if(user.role==='admin'){ // Head — their whole reporting branch, same safety nets as isInHeadBranch/hasOrphanedManagerChain
+    if(creator.role==='manager')   return creator.reportsTo === user.uid || !creator.reportsTo;
+    if(creator.role==='executive'){
+      const mgr = userByUid(creator.reportsTo);
+      return !!(mgr && mgr.reportsTo === user.uid) || hasOrphanedManagerChain(creator.name);
+    }
+    return false;
+  }
+  return false;
+}
+// Active-only (dropdowns/filters) and all-records (the Masters admin table,
+// which also lists inactive ones) variants, both scoped the same way.
+function visibleChannelPartners(){ return DB.getMasters('channelPartners').filter(cp=>canSeeCP(cp, currentUser)); }
+function visibleAllChannelPartners(){ return DB.getAllMasters('channelPartners').filter(cp=>canSeeCP(cp, currentUser)); }
+
 // ---- Workflow config -------------------------------------------------------
 // Role-wise From Status -> To Status mapping (like the "Entity Wise Role And
 // Status Mapping" screen): each row grants ONE specific role permission to
@@ -585,7 +637,7 @@ const FIELD_TO_INPUT = {
 // app read from these — nothing business-specific is hardcoded anymore.
 const MASTER_DEFS = [
   { key:'leadSources',     label:'Lead Sources',          collection:'m_lead_sources',     fields:['label'] },
-  { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'], autoCode:'CP' },
+  { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'], autoCode:'CP', trackOwner:true },
   { key:'villages',        label:'Villages / Locations',  collection:'m_villages',         fields:['name','taluk','district'] },
   { key:'landClasses',     label:'Land Classifications',  collection:'m_land_classes',     fields:['label'] },
   { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
@@ -729,7 +781,18 @@ class MemoryDB {
   async updateLead(id, patch){ const i=this.leads.findIndex(l=>l.id===id); if(i>-1) this.leads[i]=Object.assign({}, this.leads[i], patch, {updatedAt:new Date().toISOString()}); }
   getMasters(key){ return (this.masters[key]||[]).filter(m=>m.active!==false); }
   getAllMasters(key){ return this.masters[key]||[]; }
-  async addMaster(key, fields){ this.masters[key].push(Object.assign({ id: uid('M'), active:true }, fields)); }
+  async addMaster(key, fields){
+    const def = MASTER_DEFS.find(m=>m.key===key);
+    // Owner-tracked masters (Channel Partners — see trackOwner) are stamped
+    // with WHO created them at the moment of creation, never touched again
+    // afterwards (no updateMaster call below ever sets these) — this is the
+    // uid-based creator record the Manager-wise CP visibility rules key off
+    // of (see canSeeCP()), deliberately not relying on just a display name.
+    const stamped = (def && def.trackOwner && currentUser)
+      ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name })
+      : fields;
+    this.masters[key].push(Object.assign({ id: uid('M'), active:true }, stamped));
+  }
   async updateMaster(key, id, patch){ const arr=this.masters[key]; const i=arr.findIndex(m=>m.id===id); if(i>-1) arr[i]=Object.assign({}, arr[i], patch); }
   async toggleMaster(key, id){ const arr=this.masters[key]; const cur=arr.find(m=>m.id===id); if(cur) await this.updateMaster(key,id,{active: !(cur.active!==false)}); }
   async deleteMaster(key, id){ this.masters[key] = (this.masters[key]||[]).filter(m=>m.id!==id); }
@@ -925,7 +988,10 @@ class FirestoreDB {
   getAllMasters(key){ return this.masters[key]||[]; }
   async addMaster(key, fields){
     const def = MASTER_DEFS.find(m=>m.key===key);
-    await this.fsdb.collection(def.collection).add(Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, fields));
+    const stamped = (def && def.trackOwner && currentUser)
+      ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name })
+      : fields;
+    await this.fsdb.collection(def.collection).add(Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, stamped));
   }
   async updateMaster(key, id, patch){
     const def = MASTER_DEFS.find(m=>m.key===key);
@@ -1715,7 +1781,7 @@ function wireReportsEvents(){
 //      Land Approval screen: a Status filter plus a single results table) ---
 function renderProgress(){
   const sources = DB.getMasters('leadSources');
-  const cps = DB.getMasters('channelPartners');
+  const cps = visibleChannelPartners();
   const execs = visibleExecutives();
   const activeFilters = Object.assign({}, DEFAULT_FILTERS, progressFilters);
   const leads = visibleLeads().filter(l=>leadMatchesFilters(l, activeFilters));
@@ -1778,7 +1844,7 @@ function wireProgressEvents(){
 // ---- ALL LEADS LIST (dense ERP-style table page) --------------------------
 function renderList(){
   const sources = DB.getMasters('leadSources');
-  const cps = DB.getMasters('channelPartners');
+  const cps = visibleChannelPartners();
   const execs = visibleExecutives();
   const fcfg = fieldConfigMap();
   const allLeads = visibleLeads();
@@ -1946,7 +2012,14 @@ function nextMasterCode(prefix, items){
 }
 function renderMasters(){
   const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
-  const items = DB.getAllMasters(def.key);
+  // Channel Partners is the one master with manager-wise visibility (see
+  // visibleAllChannelPartners()/canSeeCP()) — every other master stays
+  // exactly as before, fully visible to anyone who can reach this page.
+  // Auto-code generation still scans the FULL, unfiltered list (never the
+  // visibility-filtered one) so two different branches can never be handed
+  // the same "next" CP code just because neither can see the other's entries.
+  const items = def.key==='channelPartners' ? visibleAllChannelPartners() : DB.getAllMasters(def.key);
+  const allItemsForCode = def.key==='channelPartners' ? DB.getAllMasters(def.key) : items;
   const rows = items.map(it=>`<tr>
       ${def.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
       <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
@@ -1985,7 +2058,7 @@ function renderMasters(){
             // on the form. Editing an existing entry keeps ITS code as-is
             // (never regenerated out from under it); adding a new one shows
             // the next code it'll get once saved.
-            const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, items);
+            const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, allItemsForCode);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="mf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
           return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
@@ -2565,7 +2638,7 @@ function wireConfigureEvents(){
 // ---- NEW LAND LEAD (own page, not a popup) --------------------------------
 function renderNewLeadView(){
   const sources = DB.getMasters('leadSources');
-  const cps = DB.getMasters('channelPartners');
+  const cps = visibleChannelPartners();
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
   const execs = visibleExecutives();
@@ -2763,7 +2836,7 @@ function renderOverviewTab(l){
     // — this is a "modify the lead's details" capability, not a
     // reassignment one (see canModifyLeadDetails()).
     const sources = DB.getMasters('leadSources');
-    const cps = DB.getMasters('channelPartners');
+    const cps = visibleChannelPartners();
     const villages = DB.getMasters('villages');
     const classes = DB.getMasters('landClasses');
     const dtVal = l.leadSourceDateTime ? String(l.leadSourceDateTime).slice(0,16) : '';
