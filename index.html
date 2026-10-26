@@ -1075,12 +1075,18 @@ let leadEditMode = false;
 // Lead-level "modify the details" capability (village, extent, price,
 // landowner, etc. on the Overview tab) — separate from, and narrower than,
 // page-level Page Access: Admin and Manager, same as Head (who already has
-// blanket access everywhere else in this app). This is view-only-adjacent,
-// not a reassignment right — Assigned Executive itself stays fixed once a
-// lead is created, for every role, exactly as before this capability
-// existed (see renderOverviewTab()).
-function canModifyLeadDetails(){
-  return !!(currentUser && (currentUser.role==='admin' || currentUser.role==='manager' || currentUser.role==='sysadmin'));
+// blanket access everywhere else in this app), always have it. An
+// Executive has it on any lead they can see at all — their own leads AND
+// their teammates' (same Manager) leads, matching visibleLeads()/
+// isTeammateOf() exactly, so an Executive's edit rights never exceed their
+// view. Assigned Executive itself still stays fixed once a lead is
+// created, for every role — this is a "modify the lead's details"
+// capability, never a reassignment one (see renderOverviewTab()).
+function canModifyLeadDetails(lead){
+  if(!currentUser) return false;
+  if(currentUser.role==='admin' || currentUser.role==='manager' || currentUser.role==='sysadmin') return true;
+  if(currentUser.role==='executive') return !!(lead && isTeammateOf(currentUser, lead.assignedExecutive));
+  return false;
 }
 
 function showConnectionBadge(live, note){
@@ -2822,7 +2828,7 @@ function renderDetailModal(id){
 
 function renderOverviewTab(l){
   const sqft = leadExtentSqft(l), pps = leadPricePerSqft(l);
-  const canEdit = canModifyLeadDetails();
+  const canEdit = canModifyLeadDetails(l);
   const nextCallBlock = `
       <div class="full"><label>Next Call Date</label>
         <div class="field-pair"><input type="date" id="ov-nextcall" value="${l.nextCallDate||''}"><button class="btn btn-sm btn-teal" id="ov-save-call">Save</button></div>
