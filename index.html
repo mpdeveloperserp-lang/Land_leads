@@ -397,6 +397,28 @@ function refreshUserPageOverridesFromDB(){
 // account (same convention the old flat executive-only filter already used).
 function userByName(name){ return (DB.getUsers()||[]).find(u=>u.name===name); }
 function userByUid(uidVal){ return (DB.getUsers()||[]).find(u=>u.uid===uidVal); }
+// Manager-wise visibility: an Executive sees not just their own leads, but
+// every OTHER Executive who reports to the SAME Manager too — teammates
+// under one Manager share full visibility of each other's leads, while
+// Executives under a different Manager (or not yet linked to one) stay
+// isolated, exactly as before this round. Also covers a lead/account
+// attached directly to the Manager rather than an Executive — not how this
+// app's New Lead form assigns leads today, but the data model doesn't
+// forbid it, and the request calls this out explicitly ("if applicable to
+// the existing lead assignment structure"). This is a VIEW-only widening:
+// it does not touch who an Executive can create/assign a new lead to — see
+// wireNewLeadViewEvents(), which already hard-locks that to self regardless
+// of what visibleExecutives() returns.
+function isTeammateOf(currentExec, otherName){
+  if(!currentExec || !otherName) return false;
+  if(otherName === currentExec.name) return true;
+  if(!currentExec.reportsTo) return false; // not linked to a Manager yet — no team to share visibility with
+  const other = userByName(otherName);
+  if(!other) return false;
+  if(other.role==='executive') return other.reportsTo === currentExec.reportsTo;
+  if(other.role==='manager') return other.uid === currentExec.reportsTo;
+  return false;
+}
 function isDirectReport(managerUid, execName){
   const exec = userByName(execName);
   return !!(exec && exec.reportsTo === managerUid);
@@ -424,7 +446,7 @@ function hasOrphanedManagerChain(execName){
 function visibleLeads(){
   const all = DB.getLeads();
   if(!currentUser) return [];
-  if(currentUser.role==='executive') return all.filter(l=>l.assignedExecutive===currentUser.name);
+  if(currentUser.role==='executive') return all.filter(l=>isTeammateOf(currentUser, l.assignedExecutive));
   if(currentUser.role==='manager') return all.filter(l=>isDirectReport(currentUser.uid, l.assignedExecutive));
   if(currentUser.role==='admin'){
     return all.filter(l => isInHeadBranch(currentUser.uid, l.assignedExecutive)
@@ -440,10 +462,15 @@ function visibleLeads(){
 // Same tree, applied to the Executive accounts themselves — used to scope
 // the "Assigned Executive" dropdown/filter on New Lead, Progress Details
 // and All Leads so a Manager/Head only sees executives in their own branch.
+// For an Executive this now lists their whole team (same isTeammateOf()
+// widening as visibleLeads(), so the filter dropdown offers exactly the
+// people whose leads actually show up in the table) — the New Lead page's
+// own assignment dropdown is unaffected, since it hard-locks to self for
+// Executives separately (see wireNewLeadViewEvents()).
 function visibleExecutives(){
   const all = DB.getUsers().filter(u=>u.role==='executive');
   if(!currentUser) return [];
-  if(currentUser.role==='executive') return all.filter(u=>u.name===currentUser.name);
+  if(currentUser.role==='executive') return all.filter(u=>isTeammateOf(currentUser, u.name));
   if(currentUser.role==='manager') return all.filter(u=>isDirectReport(currentUser.uid, u.name));
   if(currentUser.role==='admin') return all.filter(u=>isInHeadBranch(currentUser.uid, u.name) || hasOrphanedManagerChain(u.name) || !u.reportsTo);
   return all;
