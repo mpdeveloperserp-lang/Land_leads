@@ -14,6 +14,12 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<!-- Functions SDK — only used for the Manage Users "set this user's password"
+     action, which calls the adminSetUserPassword Cloud Function (see the
+     functions/ folder delivered alongside this file). If this script or the
+     deployed function isn't present, that one action fails gracefully with
+     an error message; everything else in the app is unaffected. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-functions-compat.js"></script>
 <!-- Export libraries — used by the Reports page's Export Excel / Export PDF buttons.
      If these can't load (no network), exports fall back to CSV / browser print. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -579,7 +585,7 @@ const FIELD_TO_INPUT = {
 // app read from these — nothing business-specific is hardcoded anymore.
 const MASTER_DEFS = [
   { key:'leadSources',     label:'Lead Sources',          collection:'m_lead_sources',     fields:['label'] },
-  { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'] },
+  { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'], autoCode:'CP' },
   { key:'villages',        label:'Villages / Locations',  collection:'m_villages',         fields:['name','taluk','district'] },
   { key:'landClasses',     label:'Land Classifications',  collection:'m_land_classes',     fields:['label'] },
   { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
@@ -758,6 +764,16 @@ class MemoryDB {
   async updateUser(userUid, patch){ const i=this.users.findIndex(u=>u.uid===userUid); if(i>-1) this.users[i]=Object.assign({}, this.users[i], patch); }
   async toggleUser(userUid){ const u=this.users.find(x=>x.uid===userUid); if(u) await this.updateUser(userUid, {active: !(u.active!==false)}); }
   async deleteUser(userUid){ this.users = this.users.filter(u=>u.uid!==userUid); }
+  // Demo mode stores passwords as plain in-memory strings (see login()
+  // above), so setting one directly is trivial — no backend involved. Kept
+  // as its own method (not folded into updateUser's generic patch) so both
+  // DB implementations share one call shape from the UI.
+  async changeUserPassword(userUid, newPassword){
+    if(!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
+    const u = this.users.find(x=>x.uid===userUid);
+    if(!u) throw new Error('User not found.');
+    u.password = newPassword;
+  }
 }
 
 class FirestoreDB {
@@ -958,11 +974,48 @@ class FirestoreDB {
     await this.updateUser(userUid, { active: !(u && u.active!==false) });
   }
   async deleteUser(userUid){ await this.fsdb.collection('m_users').doc(userUid).delete(); }
+  // Sets another user's real Firebase Auth sign-in password directly. The
+  // client SDK can't do this on its own — only the signed-in user can change
+  // their OWN password without a backend — so this calls the
+  // adminSetUserPassword Cloud Function (deployed separately; see the
+  // functions/ folder delivered alongside this file), which uses the Admin
+  // SDK server-side and independently re-checks that the CALLER is a Head
+  // or Admin before touching anything — never trust the client for this.
+  async changeUserPassword(userUid, newPassword){
+    if(!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
+    if(typeof firebase.functions !== 'function'){
+      throw new Error('The Functions SDK didn\'t load, so this app can\'t reach the password-change function right now.');
+    }
+    try{
+      await firebase.functions().httpsCallable('adminSetUserPassword')({ uid: userUid, newPassword });
+    }catch(err){
+      if(err && err.code === 'functions/not-found'){
+        throw new Error('The adminSetUserPassword function isn\'t deployed yet on this Firebase project — see the functions/ folder delivered with this file for the deploy steps.');
+      }
+      throw new Error((err && err.message) || 'Could not change the password.');
+    }
+  }
 }
 
 // ---- Boot: pick MemoryDB or FirestoreDB, then render --------------------
 let DB = null;
 let currentDetailLeadId = null;
+// Whether the lead detail modal's Overview tab is showing its editable form
+// right now. Reset to false whenever a (possibly different) lead is opened
+// or the modal is closed, so stale edit state never leaks from one lead to
+// the next. Who can actually SEE the Edit option at all is gated separately
+// by canModifyLeadDetails() below.
+let leadEditMode = false;
+// Lead-level "modify the details" capability (village, extent, price,
+// landowner, etc. on the Overview tab) — separate from, and narrower than,
+// page-level Page Access: Admin and Manager, same as Head (who already has
+// blanket access everywhere else in this app). This is view-only-adjacent,
+// not a reassignment right — Assigned Executive itself stays fixed once a
+// lead is created, for every role, exactly as before this capability
+// existed (see renderOverviewTab()).
+function canModifyLeadDetails(){
+  return !!(currentUser && (currentUser.role==='admin' || currentUser.role==='manager' || currentUser.role==='sysadmin'));
+}
 
 function showConnectionBadge(live, note){
   const el = document.getElementById('conn-badge');
@@ -1878,6 +1931,19 @@ function wireListEvents(){
 // land classes, drop/hold reasons). Manage Users, Workflow Config and
 // Status Config are their own standalone nav modules below, not tucked
 // into this dropdown — simpler to find and less to scroll past.
+// Auto-generates the next code for a master whose def declares `autoCode`
+// (currently just Channel Partners, prefix 'CP') — scans every existing
+// entry (active and inactive, so a deactivated/legacy one still reserves
+// its number) for the highest "<prefix>-<number>" match and returns the
+// next one, zero-padded to 3 digits (CP-007, CP-008, ... CP-999, CP-1000).
+function nextMasterCode(prefix, items){
+  const re = new RegExp('^' + prefix + '-(\\d+)$');
+  const maxNum = (items||[]).reduce((max, it) => {
+    const m = re.exec(String(it.code||'').trim());
+    return m ? Math.max(max, parseInt(m[1], 10)) : max;
+  }, 0);
+  return prefix + '-' + String(maxNum + 1).padStart(3, '0');
+}
 function renderMasters(){
   const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
   const items = DB.getAllMasters(def.key);
@@ -1913,8 +1979,19 @@ function renderMasters(){
     <div class="card">
       <h2 class="section-title" style="margin-top:0;">${editing?('Edit '+singular):('Add '+singular)}</h2>
       <div class="form-grid">
-        ${def.fields.map(f=>`<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`).join('')}
+        ${def.fields.map(f=>{
+          if(def.autoCode && f==='code'){
+            // Generated, never typed — shown read-only so it's still visible
+            // on the form. Editing an existing entry keeps ITS code as-is
+            // (never regenerated out from under it); adding a new one shows
+            // the next code it'll get once saved.
+            const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, items);
+            return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="mf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
+          }
+          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
+        }).join('')}
       </div>
+      ${def.autoCode ? `<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — ${editing ? 'it stays as it was assigned and can\'t be changed here.' : 'the next one is shown above and is applied when you click Add.'}</p>` : ''}
       <div style="margin-top:10px;display:flex;gap:8px;">
         <button class="btn btn-sm btn-teal" id="master-save">${editing?'Update':'Add'}</button>
         ${editing?'<button class="btn btn-sm btn-ghost" id="master-cancel">Cancel</button>':''}
@@ -2015,9 +2092,11 @@ function renderUsersView(){
         <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
         <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
         <div id="uf-reports-to-wrap" ${reportsToHidden ? 'style="display:none;"' : ''}><label>Reports To</label><select id="uf-reports-to">${reportsToOptionsHtml(roleForForm, editing?editing.reportsTo:'')}</select></div>
-        ${editing ? '' : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
+        ${editing
+          ? `<div><label>New Password</label><input type="password" id="uf-password" placeholder="Leave blank to keep their current password"></div>`
+          : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
       </div>
-      ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email and password can\'t be changed here — the user can reset their password from the sign-in screen\'s "Forgot password?" link.</p>' : ''}
+      ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email can\'t be changed here. To set this user\'s password, type a new one above (at least 6 characters) and click Update — it takes effect immediately; leave it blank to leave their password untouched. Only a Head or Admin account can do this.</p>' : ''}
       <div style="margin-top:10px;display:flex;gap:8px;">
         <button class="btn btn-sm btn-teal" id="user-save">${editing?'Update':'Create User'}</button>
         ${editing?'<button class="btn btn-sm btn-ghost" id="user-cancel">Cancel</button>':''}
@@ -2057,7 +2136,17 @@ function wireUsersEvents(){
     const reportsTo = (role==='admin' || role==='sysadmin') ? '' : (document.getElementById('uf-reports-to')?.value || '');
     if(!name){ alert('Name is required.'); return; }
     if(editingMasterId){
-      await DB.updateUser(editingMasterId, { name, phone, role, reportsTo });
+      const newPassword = document.getElementById('uf-password').value;
+      if(newPassword && newPassword.length < 6){ alert('New password must be at least 6 characters, or leave it blank to keep the current one.'); return; }
+      try{
+        await DB.updateUser(editingMasterId, { name, phone, role, reportsTo });
+        if(newPassword) await DB.changeUserPassword(editingMasterId, newPassword);
+      }catch(err){
+        alert('Saved the profile, but could not change the password: ' + ((err && err.message) || err));
+        editingMasterId = null;
+        render();
+        return;
+      }
       editingMasterId = null;
     } else {
       const password = document.getElementById('uf-password').value;
@@ -2615,6 +2704,7 @@ function openLeadDetail(id){
   if(currentUser && l && !visibleLeads().some(v=>v.id===id)){
     alert('This lead is outside the leads you can access.'); return;
   }
+  leadEditMode = false; // opening a (possibly different) lead always starts in read-only view
   currentDetailLeadId = id;
   renderDetailModal(id);
 }
@@ -2659,13 +2749,65 @@ function renderDetailModal(id){
 
 function renderOverviewTab(l){
   const sqft = leadExtentSqft(l), pps = leadPricePerSqft(l);
+  const canEdit = canModifyLeadDetails();
+  const nextCallBlock = `
+      <div class="full"><label>Next Call Date</label>
+        <div class="field-pair"><input type="date" id="ov-nextcall" value="${l.nextCallDate||''}"><button class="btn btn-sm btn-teal" id="ov-save-call">Save</button></div>
+      </div>`;
+
+  if(canEdit && leadEditMode){
+    // The editable form — property/business details only. Status is driven
+    // exclusively by the gated Stage & Actions transitions below (letting it
+    // be freely retyped here would bypass Workflow Config entirely), and
+    // Assigned Executive stays fixed once a lead is created, for every role
+    // — this is a "modify the lead's details" capability, not a
+    // reassignment one (see canModifyLeadDetails()).
+    const sources = DB.getMasters('leadSources');
+    const cps = DB.getMasters('channelPartners');
+    const villages = DB.getMasters('villages');
+    const classes = DB.getMasters('landClasses');
+    const dtVal = l.leadSourceDateTime ? String(l.leadSourceDateTime).slice(0,16) : '';
+    return `
+      <div class="form-grid">
+        <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
+        <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
+        <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
+        <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'} <span style="color:var(--muted);font-size:11.5px;">(not changed here)</span></div></div>
+        <div><label>Village Name</label><select id="ov-e-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}" ${v.name===l.village?'selected':''}>${v.name}</option>`).join('')}</select></div>
+        <div><label>Site Location</label><input type="text" id="ov-e-loc" value="${l.siteLocation||''}"></div>
+        <div><label>Survey Number</label><input type="text" id="ov-e-survey" value="${l.surveyNumber||''}"></div>
+        <div><label>Google Pin</label><input type="text" id="ov-e-pin" value="${l.googlePin||''}"></div>
+        <div><label>Land Classification</label><select id="ov-e-class">${classes.map(c=>`<option value="${c.label}" ${c.label===l.landClassification?'selected':''}>${c.label}</option>`).join('')}</select></div>
+        <div>
+          <label>Total Extent</label>
+          <div class="field-pair"><input type="number" id="ov-e-extent-val" step="0.01" value="${l.extentValue!=null?l.extentValue:''}"><select id="ov-e-extent-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}" ${k===l.extentUnit?'selected':''}>${v.label}</option>`).join('')}</select></div>
+        </div>
+        <div>
+          <label>Quoted Price</label>
+          <div class="field-pair"><input type="number" id="ov-e-price-val" step="0.01" value="${l.priceValue!=null?l.priceValue:''}"><select id="ov-e-price-unit">${Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}" ${k===l.priceUnit?'selected':''}>${v.label}</option>`).join('')}</select></div>
+        </div>
+        <div><label>Landowner Name</label><input type="text" id="ov-e-owner-name" value="${l.landownerName||''}"></div>
+        <div><label>Landowner Phone</label><input type="text" id="ov-e-owner-phone" value="${l.landownerPhone||''}"></div>
+        <div><label>Mediator Name</label><input type="text" id="ov-e-med-name" value="${l.mediatorName||''}"></div>
+        <div><label>Mediator Phone</label><input type="text" id="ov-e-med-phone" value="${l.mediatorPhone||''}"></div>
+        ${nextCallBlock}
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="ov-save-details">Save Details</button>
+        <button class="btn btn-sm btn-ghost" id="ov-cancel-details">Cancel</button>
+      </div>`;
+  }
+
   return `
+    ${canEdit ? `<div style="display:flex;justify-content:flex-end;margin-bottom:8px;"><button class="btn btn-sm btn-ghost" id="ov-edit-details">✎ Edit Details</button></div>` : ''}
     <div class="form-grid">
       <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
       <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
+      <div><label>Village</label><div>${l.village||'—'}</div></div>
       <div><label>Site Location</label><div>${l.siteLocation||'—'}</div></div>
       <div><label>Survey Number</label><div>${l.surveyNumber||'—'}</div></div>
       <div><label>Google Pin</label><div>${l.googlePin||'—'}</div></div>
@@ -2674,9 +2816,7 @@ function renderOverviewTab(l){
       <div><label>Quoted Price</label><div>${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label} <span style="color:var(--muted)">(≈ ${fmtNum(pps)}/sqft)</span></div></div>
       <div><label>Landowner</label><div>${l.landownerName||'—'} ${l.landownerPhone?('· '+l.landownerPhone):''}</div></div>
       <div><label>Mediator</label><div>${l.mediatorName||'—'} ${l.mediatorPhone?('· '+l.mediatorPhone):''}</div></div>
-      <div class="full"><label>Next Call Date</label>
-        <div class="field-pair"><input type="date" id="ov-nextcall" value="${l.nextCallDate||''}"><button class="btn btn-sm btn-teal" id="ov-save-call">Save</button></div>
-      </div>
+      ${nextCallBlock}
     </div>`;
 }
 
@@ -2848,6 +2988,37 @@ function wireDetailTabEvents(l){
     };
   }
   {
+    const editBtn = document.getElementById('ov-edit-details');
+    if(editBtn) editBtn.onclick = () => { leadEditMode = true; renderDetailModal(l.id); };
+    const cancelBtn = document.getElementById('ov-cancel-details');
+    if(cancelBtn) cancelBtn.onclick = () => { leadEditMode = false; renderDetailModal(l.id); };
+    const saveBtn = document.getElementById('ov-save-details');
+    if(saveBtn) saveBtn.onclick = async () => {
+      const val = id => document.getElementById(id)?.value;
+      const patch = {
+        leadSource: (val('ov-e-source')||'').trim(),
+        leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime,
+        channelPartnerCode: (val('ov-e-cp')||'').trim(),
+        village: (val('ov-e-village')||'').trim(),
+        siteLocation: (val('ov-e-loc')||'').trim(),
+        surveyNumber: (val('ov-e-survey')||'').trim(),
+        googlePin: (val('ov-e-pin')||'').trim(),
+        landClassification: (val('ov-e-class')||'').trim(),
+        extentValue: parseFloat(val('ov-e-extent-val')) || 0,
+        extentUnit: val('ov-e-extent-unit') || l.extentUnit,
+        priceValue: parseFloat(val('ov-e-price-val')) || 0,
+        priceUnit: val('ov-e-price-unit') || l.priceUnit,
+        landownerName: (val('ov-e-owner-name')||'').trim(),
+        landownerPhone: (val('ov-e-owner-phone')||'').trim(),
+        mediatorName: (val('ov-e-med-name')||'').trim(),
+        mediatorPhone: (val('ov-e-med-phone')||'').trim(),
+      };
+      await DB.updateLead(l.id, patch);
+      leadEditMode = false;
+      renderDetailModal(l.id); render();
+    };
+  }
+  {
     // Shared by the built-in fwd/back moves AND every extra (non-adjacent)
     // destination Workflow Config adds — slot picks which field ids to read
     // (see transitionFieldIds) and noteVerb only affects the stageHistory
@@ -2960,7 +3131,7 @@ function wireDetailTabEvents(l){
 }
 
 // ---- shared modal / view wiring -----------------------------------------
-function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; }
+function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; leadEditMode = false; }
 
 function wireViewEvents(){
   if(currentView==='dashboard'){
