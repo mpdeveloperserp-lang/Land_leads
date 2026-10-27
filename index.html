@@ -727,6 +727,7 @@ function seedLeads(){
     documents:[], negotiationLog:[], approval:{approver:'',date:'',remarks:''},
     finalPrice:null, finalDate:'', outcome:'',
     stageHistory:[{stage:o.stage, at:daysAgo(o.stageAge!=null?o.stageAge:o.age||0), by:o.assignedExecutive||'Karthik R', note:'Lead created'}],
+    reassignmentHistory:[],
   }, o);
 
   return [
@@ -779,6 +780,36 @@ class MemoryDB {
   getLead(id){ return this.leads.find(l=>l.id===id); }
   async addLead(lead){ const withId = Object.assign({}, lead, { id: lead.leadId }); this.leads.unshift(withId); }
   async updateLead(id, patch){ const i=this.leads.findIndex(l=>l.id===id); if(i>-1) this.leads[i]=Object.assign({}, this.leads[i], patch, {updatedAt:new Date().toISOString()}); }
+  // Frozen (On Hold) lead reassignment — every check here is re-run
+  // regardless of what the UI already filtered, so a direct call can never
+  // bypass same-Manager/role/active-user enforcement (see canReassignLead()/
+  // eligibleReassignmentTargets() above). Appends to reassignmentHistory —
+  // never trims or overwrites it — and changes ONLY assignedExecutive on
+  // the SAME lead document; nothing else about the lead (status stays
+  // Frozen/On Hold, stageHistory/documents/etc. untouched, no new lead
+  // created).
+  async reassignLead(leadId, newExecutiveName, remarks){
+    const lead = this.leads.find(l=>l.id===leadId);
+    if(!lead) throw new Error('Lead not found.');
+    if(!(lead.onHold && lead.onHold.active)) throw new Error('Only a Frozen (On Hold) lead can be reassigned.');
+    if(!currentUser || !canReassignLead(lead)) throw new Error('You are not authorized to reassign this lead.');
+    const currentExec = userByName(lead.assignedExecutive);
+    const newExec = userByName(newExecutiveName);
+    if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
+    if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
+    const manager = userByUid(currentExec.reportsTo);
+    const entry = {
+      fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
+      reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
+      previousStatus: 'Frozen', currentStatus: 'Frozen',
+    };
+    const i = this.leads.findIndex(l=>l.id===leadId);
+    this.leads[i] = Object.assign({}, lead, {
+      assignedExecutive: newExec.name,
+      reassignmentHistory: (lead.reassignmentHistory||[]).concat([entry]),
+      updatedAt: new Date().toISOString(),
+    });
+  }
   getMasters(key){ return (this.masters[key]||[]).filter(m=>m.active!==false); }
   getAllMasters(key){ return this.masters[key]||[]; }
   async addMaster(key, fields){
@@ -984,6 +1015,40 @@ class FirestoreDB {
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     }));
   }
+  // Same validation as MemoryDB.reassignLead() (see its comment), run
+  // inside a Firestore transaction so a concurrent change to this exact
+  // lead — someone else resuming it from hold, or reassigning it, at the
+  // same moment — can't race past the "still Frozen" / "still reports to
+  // this Manager" checks. Note serverTimestamp() isn't usable INSIDE an
+  // array element, so the audit entry's own timestamp is a plain ISO
+  // string (same as every other history entry already stored on a lead);
+  // only the document-level updatedAt uses the real server clock.
+  async reassignLead(leadId, newExecutiveName, remarks){
+    if(!currentUser) throw new Error('You are not authorized to reassign this lead.');
+    const ref = this.fsdb.collection('leads').doc(leadId);
+    await this.fsdb.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if(!snap.exists) throw new Error('Lead not found.');
+      const lead = Object.assign({ id: leadId }, snap.data());
+      if(!(lead.onHold && lead.onHold.active)) throw new Error('Only a Frozen (On Hold) lead can be reassigned.');
+      if(!canReassignLead(lead)) throw new Error('You are not authorized to reassign this lead.');
+      const currentExec = userByName(lead.assignedExecutive);
+      const newExec = userByName(newExecutiveName);
+      if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
+      if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
+      const manager = userByUid(currentExec.reportsTo);
+      const entry = {
+        fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
+        reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
+        previousStatus: 'Frozen', currentStatus: 'Frozen',
+      };
+      tx.update(ref, {
+        assignedExecutive: newExec.name,
+        reassignmentHistory: (lead.reassignmentHistory||[]).concat([entry]),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+    });
+  }
   getMasters(key){ return (this.masters[key]||[]).filter(m=>m.active!==false); }
   getAllMasters(key){ return this.masters[key]||[]; }
   async addMaster(key, fields){
@@ -1076,17 +1141,60 @@ let leadEditMode = false;
 // landowner, etc. on the Overview tab) — separate from, and narrower than,
 // page-level Page Access: Admin and Manager, same as Head (who already has
 // blanket access everywhere else in this app), always have it. An
-// Executive has it on any lead they can see at all — their own leads AND
-// their teammates' (same Manager) leads, matching visibleLeads()/
-// isTeammateOf() exactly, so an Executive's edit rights never exceed their
-// view. Assigned Executive itself still stays fixed once a lead is
-// created, for every role — this is a "modify the lead's details"
-// capability, never a reassignment one (see renderOverviewTab()).
+// Executive has it ONLY on a lead actually assigned to THEM — kept simple
+// and narrow on purpose, not widened to teammates' leads (an earlier round
+// did try that wider scope and it was then explicitly asked back down to
+// just an Executive's own leads). Assigned Executive itself still stays
+// fixed once a lead is created, for every role — this is a "modify the
+// lead's details" capability, never a reassignment one (see
+// renderOverviewTab()).
 function canModifyLeadDetails(lead){
   if(!currentUser) return false;
   if(currentUser.role==='admin' || currentUser.role==='manager' || currentUser.role==='sysadmin') return true;
-  if(currentUser.role==='executive') return !!(lead && isTeammateOf(currentUser, lead.assignedExecutive));
+  if(currentUser.role==='executive') return !!(lead && lead.assignedExecutive === currentUser.name);
   return false;
+}
+// Whether the Stage & Actions tab's "Reassign Executive" form (Frozen-lead
+// reassignment, below) is open right now. Same reset-on-open/close
+// discipline as leadEditMode, for the same reason — stale form state must
+// never leak from one lead to the next.
+let reassignMode = false;
+// ---- Frozen Lead Reassignment --------------------------------------------
+// "Frozen" (the request's term) maps onto this app's existing On-Hold flag
+// (l.onHold.active) — there's no separate "Frozen" pipeline stage, and
+// On-Hold is the only lead-level "paused, waiting on something" status
+// that already exists, with its own reason/notes/since fields and its own
+// "Stage & Actions" fieldset. Reassignment is offered ONLY on a lead
+// that's actually on hold.
+// Who may reassign reuses the exact same Reports-To tree as every other
+// access rule in this app: Manager, within their own reporting Executives;
+// Head, within their own reporting branch (not blanket, unlike most other
+// Head overrides elsewhere — the request specifically frames Head's
+// permission as scoped to "the relevant Manager's team", so this mirrors
+// visibleLeads()'s own branch-scoping instead of the usual Head-always-
+// wins shortcut); Admin (sysadmin), unconditionally, same full-access
+// precedent as everywhere else. An Executive is never authorized to
+// reassign — no existing business rule grants it — so they never see the
+// option at all, regardless of whose lead it is.
+function canReassignLead(lead){
+  if(!currentUser || !lead) return false;
+  if(!(lead.onHold && lead.onHold.active)) return false; // only a Frozen/On-Hold lead is ever eligible
+  if(currentUser.role==='sysadmin') return true;
+  if(currentUser.role==='admin') return isInHeadBranch(currentUser.uid, lead.assignedExecutive) || hasOrphanedManagerChain(lead.assignedExecutive);
+  if(currentUser.role==='manager') return isDirectReport(currentUser.uid, lead.assignedExecutive);
+  return false;
+}
+// Every ACTIVE Executive reporting to the SAME Manager as the lead's
+// CURRENT Executive — never the current Executive themselves (nothing to
+// reassign to otherwise), and never anyone from another Manager's team,
+// enforced here (not just in whichever dropdown renders it) so this same
+// check also guards the actual save in DB.reassignLead() below. Returns []
+// if the current Executive isn't a real, linked user — nowhere safe to
+// reassign within "the same team" in that case.
+function eligibleReassignmentTargets(lead){
+  const current = userByName(lead && lead.assignedExecutive);
+  if(!current || !current.reportsTo) return [];
+  return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && u.reportsTo===current.reportsTo && u.name!==current.name);
 }
 
 function showConnectionBadge(live, note){
@@ -2768,6 +2876,7 @@ function wireNewLeadViewEvents(){
       documents:[], negotiationLog:[], approval:{approver:'',date:'',remarks:''},
       finalPrice:null, finalDate:'', outcome:'',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:exec, note:'Lead created'}],
+      reassignmentHistory:[],
     };
     await DB.addLead(lead);
     goToLeadsList({});
@@ -2784,6 +2893,7 @@ function openLeadDetail(id){
     alert('This lead is outside the leads you can access.'); return;
   }
   leadEditMode = false; // opening a (possibly different) lead always starts in read-only view
+  reassignMode = false;
   currentDetailLeadId = id;
   renderDetailModal(id);
 }
@@ -2964,12 +3074,47 @@ function renderStageTab(l){
   const holdReasons = DB.getMasters('holdReasons');
   const dropReasons = DB.getMasters('dropReasons');
 
+  // "Reassign Executive" — only ever offered on a Frozen (On Hold) lead,
+  // and only to whoever canReassignLead() allows (Manager/Head within
+  // their own team, Admin always; never an Executive). The dropdown is
+  // pre-scoped to eligibleReassignmentTargets(), but DB.reassignLead()
+  // re-validates everything itself too — the dropdown's filtering is a
+  // convenience, not the actual enforcement.
+  const canReassign = canReassignLead(l);
+  const reassignTargets = canReassign ? eligibleReassignmentTargets(l) : [];
+  const currentExecForReassign = userByName(l.assignedExecutive);
+  const managerForReassign = currentExecForReassign ? userByUid(currentExecForReassign.reportsTo) : null;
+  const reassignBlock = !canReassign ? '' : `
+    <button class="btn btn-sm btn-ghost" id="reassign-open-btn" style="margin-left:8px;">Reassign Executive</button>
+    ${reassignMode ? `
+      <div class="card" style="margin-top:10px;padding:12px;">
+        <h4 style="margin:0 0 8px;">Reassign Executive — Frozen Lead</h4>
+        <div class="form-grid">
+          <div><label>Lead</label><div>${l.leadId}</div></div>
+          <div><label>Current Executive</label><div>${l.assignedExecutive||'—'}</div></div>
+          <div><label>Manager</label><div>${managerForReassign ? managerForReassign.name : '—'}</div></div>
+          <div><label>New Executive</label><select id="reassign-new-exec">
+            <option value="">— select —</option>
+            ${reassignTargets.map(u=>`<option value="${u.name}">${u.name}</option>`).join('')}
+          </select></div>
+          <div class="full"><label>Reassignment Remarks</label><input type="text" id="reassign-remarks" placeholder="e.g. Executive workload balancing"></div>
+        </div>
+        ${!reassignTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No other eligible, active Executive reports to the same Manager yet.</p>` : ''}
+        <div style="margin-top:10px;display:flex;gap:8px;">
+          <button class="btn btn-sm btn-teal" id="reassign-confirm-btn">Confirm Reassignment</button>
+          <button class="btn btn-sm btn-ghost" id="reassign-cancel-btn">Cancel</button>
+        </div>
+      </div>
+    ` : ''}
+  `;
+
   const holdBlock = `
     <fieldset>
       <legend>On Hold</legend>
       ${l.onHold && l.onHold.active ? `
         <p style="font-size:13px;">Currently on hold since ${fmtDate(l.onHold.since)} — <b>${l.onHold.reasonCode}</b>${l.onHold.notes?': '+l.onHold.notes:''}</p>
         <button class="btn btn-sm btn-teal" id="resume-btn">Resume (clear hold)</button>
+        ${reassignBlock}
       ` : `
         <div class="form-grid">
           <div><label>Reason</label><select id="hold-reason">${holdReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
@@ -3055,7 +3200,14 @@ function renderHistoryTab(l){
   const items = (l.stageHistory||[]).slice().reverse().map(h=>
     `<div class="history-item"><b>${stageLabel(h.stage)}</b> — ${h.note||''}<div class="when">${fmtDate(h.at)} · ${h.by||''}</div></div>`
   ).join('') || '<div class="empty">No history recorded.</div>';
-  return items;
+  // Reassignment audit trail — every entry DB.reassignLead() has ever
+  // appended, oldest-last, same as the stage history above. Never trimmed
+  // or overwritten (see reassignLead()), so a lead reassigned several
+  // times keeps every prior entry here.
+  const reassignItems = (l.reassignmentHistory||[]).slice().reverse().map(r=>
+    `<div class="history-item"><b>Reassigned</b> — ${r.fromExecutive} → ${r.toExecutive} (Manager: ${r.manager||'—'})${r.remarks?': '+r.remarks:''}<div class="when">${fmtDate(r.reassignedAt)} · by ${r.reassignedBy||''} · status stayed ${r.currentStatus||'Frozen'}</div></div>`
+  ).join('');
+  return items + reassignItems;
 }
 
 function wireDetailTabEvents(l){
@@ -3147,6 +3299,23 @@ function wireDetailTabEvents(l){
       await DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' } });
       renderDetailModal(l.id); render();
     };
+    const reassignOpenBtn = document.getElementById('reassign-open-btn');
+    if(reassignOpenBtn) reassignOpenBtn.onclick = () => { reassignMode = true; renderDetailModal(l.id); };
+    const reassignCancelBtn = document.getElementById('reassign-cancel-btn');
+    if(reassignCancelBtn) reassignCancelBtn.onclick = () => { reassignMode = false; renderDetailModal(l.id); };
+    const reassignConfirmBtn = document.getElementById('reassign-confirm-btn');
+    if(reassignConfirmBtn) reassignConfirmBtn.onclick = async () => {
+      const newExec = document.getElementById('reassign-new-exec').value;
+      const remarks = document.getElementById('reassign-remarks').value.trim();
+      if(!newExec){ alert('Select the new Executive to reassign this lead to.'); return; }
+      try {
+        await DB.reassignLead(l.id, newExec, remarks);
+        reassignMode = false;
+        renderDetailModal(l.id); render();
+      } catch(err){
+        alert(err.message || 'Could not reassign this lead.');
+      }
+    };
     const dropBtn = document.getElementById('drop-btn');
     if(dropBtn) dropBtn.onclick = async () => {
       const reason = document.getElementById('drop-reason').value;
@@ -3210,7 +3379,7 @@ function wireDetailTabEvents(l){
 }
 
 // ---- shared modal / view wiring -----------------------------------------
-function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; leadEditMode = false; }
+function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; leadEditMode = false; reassignMode = false; }
 
 function wireViewEvents(){
   if(currentView==='dashboard'){
