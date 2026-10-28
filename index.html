@@ -202,6 +202,7 @@
       <button data-view="analytics">MIS Analytics</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
+      <button data-view="channelPartners">Channel Partners</button>
       <button data-view="landowners">Landowners</button>
       <button data-view="landParcels">Land Parcels</button>
       <div class="nav-group-label" id="admin-nav-label">System</div>
@@ -303,7 +304,7 @@ function refreshStagesFromDB(){
 // drive every existing Lead extent/price field exactly as before.
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1}, hectare:{label:'Hectare',sqft:107639.1}, sqm:{label:'Sq. Metre',sqft:10.7639} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', analytics:'MIS Analytics', configure:'Configure — Lead Fields', masters:'Masters', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access', auditTrail:'Audit Trail' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', analytics:'MIS Analytics', configure:'Configure — Lead Fields', masters:'Masters', channelPartners:'Channel Partners', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access', auditTrail:'Audit Trail' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
@@ -353,6 +354,13 @@ const DEFAULT_VIEW_ACCESS = {
   // existing precedent.
   landowners:  ['admin','manager','executive'],
   landParcels: ['admin','manager','executive'],
+  // Channel Partners (pulled out of the Head/Admin-only Masters page into
+  // its own page — Sara's explicit request: "like a single page not in
+  // masters") — same default tier as Landowners/Land Parcels, her explicit
+  // choice over keeping it Head/Admin-only. Manager-wise CP ownership/
+  // visibility (canSeeCP()) still applies on top of this page-access layer,
+  // same as it always has.
+  channelPartners: ['admin','manager','executive'],
   users:       ['admin','sysadmin'],
   workflow:    ['admin','sysadmin'],
   statusConfig:['admin','sysadmin'],
@@ -566,6 +574,37 @@ function visibleAllChannelPartners(){ return DB.getAllMasters('channelPartners')
 function cpLeadCount(code){
   if(!code) return 0;
   return visibleLeads().filter(l=>l.channelPartnerCode===code).length;
+}
+// Permanently deleting a Channel Partner record — same narrower-than-
+// Executive precedent used everywhere else in this app (canDeleteLandRegistry,
+// canVerifyDocument, canRecordLegalOrValuation, canRecordFinancialEntry):
+// an Executive can view/add/edit, but not delete.
+function canDeleteChannelPartner(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+// "Link/Change Owner" — re-stamps createdByUid/createdByName on an existing
+// Channel Partner record (see cpCreator()'s own comment on the legacy-data
+// gap this closes: production CPs created before Manager-wise CP ownership
+// existed have no creator, so they're currently shared/visible-to-everyone;
+// Sara's explicit follow-up request was a way to assign those to a branch
+// now). Same narrower-than-Executive tier as deletion above — an Executive
+// never gets this action at all, regardless of whose CP it is.
+function canLinkCPOwner(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+// Who a Manager/Head/Admin may link/re-link a Channel Partner's owner to.
+// Manager: themselves or one of their own reporting Executives — same
+// branch-scoping precedent as reassignment, so a Manager can "claim" a
+// legacy CP into their own branch or hand it to one of their Executives,
+// but never into a different branch. Head/Admin: any active Manager or
+// Executive company-wide, same full-access precedent as everywhere else.
+function cpOwnerLinkTargets(){
+  if(!currentUser) return [];
+  const all = DB.getUsers().filter(u => u.role==='manager' || u.role==='executive');
+  if(currentUser.role==='manager'){
+    return all.filter(u => u.uid===currentUser.uid || (u.role==='executive' && u.reportsTo===currentUser.uid));
+  }
+  return all; // admin/sysadmin — company-wide
 }
 
 // ---- Workflow config -------------------------------------------------------
@@ -2070,6 +2109,15 @@ let editingMasterId = null;
 // — reset whenever the master table is switched so a stale filter never
 // silently hides rows on a different master.
 let masterSearch = '';
+// Channel Partners (standalone page, pulled out of Masters per Sara's
+// request — "like a single page not in masters") — own edit/search state,
+// mirroring masterSearch/editingMasterId above but kept separate since this
+// is now its own page, not a Masters-page sub-mode.
+let editingCPId = null;
+let cpSearch = '';
+// Which Channel Partner (if any) currently has its inline "Link/Change
+// Owner" mini-form open — see renderChannelPartnersView()'s Owner column.
+let linkingCPOwnerId = null;
 let editingLandownerId = null;
 let editingParcelId = null;
 // Draft list of {landownerId, landownerName, ownershipSharePct} rows for
@@ -2107,6 +2155,7 @@ function render(){
   else if(currentView==='analytics') root.innerHTML = renderAnalytics();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
+  else if(currentView==='channelPartners') root.innerHTML = renderChannelPartnersView();
   else if(currentView==='landowners') root.innerHTML = renderLandownersView();
   else if(currentView==='landParcels') root.innerHTML = renderLandParcelsView();
   else if(currentView==='users') root.innerHTML = renderUsersView();
@@ -2972,36 +3021,25 @@ function nextMasterCode(prefix, items){
   return prefix + '-' + String(maxNum + 1).padStart(3, '0');
 }
 function renderMasters(){
-  const def = MASTER_DEFS.find(m=>m.key===currentMasterKey) || MASTER_DEFS[0];
-  // Channel Partners is the one master with manager-wise visibility (see
-  // visibleAllChannelPartners()/canSeeCP()) — every other master stays
-  // exactly as before, fully visible to anyone who can reach this page.
-  // Auto-code generation still scans the FULL, unfiltered list (never the
-  // visibility-filtered one) so two different branches can never be handed
-  // the same "next" CP code just because neither can see the other's entries.
-  const items = def.key==='channelPartners' ? visibleAllChannelPartners() : DB.getAllMasters(def.key);
-  const allItemsForCode = def.key==='channelPartners' ? DB.getAllMasters(def.key) : items;
-  // Type-and-search (currently Channel Partners only — her request was
-  // specifically to search CP details, including by mobile number, to see
-  // how many leads a CP has been given) — matched against code/name/phone,
-  // case-insensitive substring. Applied to a SEPARATE display list so the
-  // record under edit never silently disappears from `editing` just
-  // because it no longer matches whatever's currently typed in the box.
-  const isCP = def.key==='channelPartners';
-  const search = (masterSearch||'').trim().toLowerCase();
-  const displayItems = (isCP && search)
-    ? items.filter(it => [(it.code||''),(it.name||''),(it.phone||'')].some(v => String(v).toLowerCase().includes(search)))
-    : items;
-  const rows = displayItems.map(it=>`<tr>
+  // Channel Partners moved out to its own standalone page (Sara: "like a
+  // single page not in masters" — see renderChannelPartnersView()) — it's
+  // no longer offered in this page's "Master Table" dropdown below. It
+  // stays in MASTER_DEFS itself, though (the DB layer, Configure page, and
+  // Audit Trail labeling all still key off that array), so if stale state
+  // ever leaves currentMasterKey pointed at it, fall back to the first
+  // selectable master instead of rendering a dead end.
+  const selectableDefs = MASTER_DEFS.filter(m=>m.key!=='channelPartners');
+  const def = selectableDefs.find(m=>m.key===currentMasterKey) || selectableDefs[0];
+  const items = DB.getAllMasters(def.key);
+  const rows = items.map(it=>`<tr>
       ${def.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
-      ${isCP ? `<td>${cpLeadCount(it.code)}</td>` : ''}
       <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
       <td class="master-actions">
         <button class="icon-btn icon-ok" data-toggle="${it.id}" title="${it.active!==false?'Deactivate':'Activate'}">${it.active!==false?'✓':'○'}</button>
         <button class="icon-btn icon-edit" data-edit="${it.id}" title="Edit">✎</button>
         <button class="icon-btn icon-del" data-delete="${it.id}" title="Delete permanently">🗑</button>
       </td>
-    </tr>`).join('') || `<tr><td colspan="${def.fields.length+(isCP?3:2)}" class="empty">${isCP && search ? 'No Channel Partner matches that search.' : 'No entries yet.'}</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="${def.fields.length+2}" class="empty">No entries yet.</td></tr>`;
 
   const editing = editingMasterId ? items.find(i=>i.id===editingMasterId) : null;
   const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
@@ -3011,15 +3049,14 @@ function renderMasters(){
     <div class="card filter-panel">
       <div class="form-grid">
         <div><label>Master Table</label><select id="master-select">
-          ${MASTER_DEFS.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
+          ${selectableDefs.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
         </select></div>
-        ${isCP ? `<div><label>Search (Name / Code / Mobile)</label><input type="text" id="master-search" value="${masterSearch||''}" placeholder="e.g. 9884022222"></div>` : ''}
       </div>
       <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
     </div>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr>${def.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}${isCP?'<th>Leads Sourced</th>':''}<th>Status</th><th>Actions</th></tr>
+        <tr>${def.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Status</th><th>Actions</th></tr>
         ${rows}
       </table>
     </div>
@@ -3032,7 +3069,7 @@ function renderMasters(){
             // on the form. Editing an existing entry keeps ITS code as-is
             // (never regenerated out from under it); adding a new one shows
             // the next code it'll get once saved.
-            const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, allItemsForCode);
+            const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, items);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="mf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
           return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
@@ -3049,16 +3086,10 @@ function renderMasters(){
 
 function wireMastersEvents(){
   const sel = document.getElementById('master-select');
-  // Reset the search box too whenever the master table itself changes —
-  // otherwise a search typed for Channel Partners could silently hide rows
-  // if she ever switches away and back without re-reading the label.
-  const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; masterSearch=''; render(); };
+  const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; render(); };
   const goBtn = document.getElementById('master-go');
   if(goBtn) goBtn.onclick = switchMaster;
   if(sel) sel.addEventListener('change', switchMaster);
-
-  const searchEl = document.getElementById('master-search');
-  if(searchEl) searchEl.addEventListener('input', () => { masterSearch = searchEl.value; render(); });
 
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.edit; render(); });
   document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick = async () => {
@@ -3104,6 +3135,164 @@ function wireMastersEvents(){
   };
   const cancelBtn = document.getElementById('master-cancel');
   if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
+}
+
+// ---- CHANNEL PARTNERS (own page — was a Masters sub-table, now standalone,
+//      same "pulled out of Masters" precedent as Manage Users above. Sara's
+//      explicit request: "Channel partners i want like a single page not in
+//      masters" — CPs are day-to-day lead-sourcing data Managers/Executives
+//      touch constantly, not system configuration like Villages/Land
+//      Classes/Drop Reasons, so it gets the same Manager/Head/Executive
+//      default tier as Landowners/Land Parcels (her explicit choice) rather
+//      than staying behind the Head/Admin-only Masters page. ------------
+const CP_DEF = MASTER_DEFS.find(m=>m.key==='channelPartners');
+function renderChannelPartnersView(){
+  // Manager-wise visibility (canSeeCP()) is unchanged — this page just
+  // moved WHERE that already-filtered list is shown, not how it's filtered.
+  // Auto-code generation still scans the FULL, unfiltered list so two
+  // different branches can never be handed the same "next" CP code just
+  // because neither can see the other's entries.
+  const items = visibleAllChannelPartners();
+  const allItemsForCode = DB.getAllMasters('channelPartners');
+  const search = (cpSearch||'').trim().toLowerCase();
+  const displayItems = search
+    ? items.filter(it => [(it.code||''),(it.name||''),(it.phone||'')].some(v => String(v).toLowerCase().includes(search)))
+    : items;
+  const canLink = canLinkCPOwner();
+  const linkTargets = canLink ? cpOwnerLinkTargets() : [];
+  const rows = displayItems.map(it=>{
+    const creator = cpCreator(it);
+    const linkRow = linkingCPOwnerId===it.id ? `
+      <tr><td colspan="8" style="background:var(--bg-soft,#f6f8fa);padding:10px 14px;">
+        <div class="form-grid" style="margin-bottom:0;">
+          <div><label>${creator ? 'Re-link to' : 'Link to'} (Manager or Executive)</label>
+            <select id="cp-link-target">
+              <option value="">— select —</option>
+              ${linkTargets.map(u=>`<option value="${u.uid}">${u.name} (${ROLE_LABELS[u.role]})</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        ${!linkTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No eligible Manager/Executive to link to.</p>` : ''}
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button class="btn btn-sm btn-teal" id="cp-link-save" data-cp-link-save="${it.id}">Save Owner</button>
+          <button class="btn btn-sm btn-ghost" id="cp-link-cancel">Cancel</button>
+        </div>
+      </td></tr>` : '';
+    return `<tr>
+      ${CP_DEF.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
+      <td>${cpLeadCount(it.code)}</td>
+      <td>${creator ? creator.name : '<span class="badge badge-muted">Shared / Legacy</span>'}</td>
+      <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-cp-toggle="${it.id}" title="${it.active!==false?'Deactivate':'Activate'}">${it.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-cp-edit="${it.id}" title="Edit">✎</button>
+        ${canLink ? `<button class="icon-btn" data-cp-link-open="${it.id}" title="${creator?'Change':'Link'} Owner">🔗</button>` : ''}
+        ${canDeleteChannelPartner() ? `<button class="icon-btn icon-del" data-cp-delete="${it.id}" title="Delete permanently">🗑</button>` : ''}
+      </td>
+    </tr>${linkRow}`;
+  }).join('') || `<tr><td colspan="8" class="empty">${search ? 'No Channel Partner matches that search.' : 'No Channel Partners yet.'}</td></tr>`;
+
+  const editing = editingCPId ? items.find(i=>i.id===editingCPId) : null;
+
+  return `
+    <div class="page-header"><h1>Channel Partners</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible per the same Manager-wise ownership as your Leads — a Channel Partner created before that rule existed shows as "Shared / Legacy" and stays visible to everyone until it's linked to a Manager or Executive below.</p>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Search (Name / Code / Mobile)</label><input type="text" id="cp-search" value="${cpSearch||''}" placeholder="e.g. 9884022222"></div>
+      </div>
+      <div class="filter-actions"><button class="btn btn-sm btn-teal" id="cp-go">Go</button></div>
+    </div>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr>${CP_DEF.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Leads Sourced</th><th>Owner / Branch</th><th>Status</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing?'Edit Channel Partner':'Add Channel Partner'}</h2>
+      <div class="form-grid">
+        ${CP_DEF.fields.map(f=>{
+          if(CP_DEF.autoCode && f==='code'){
+            const codeVal = editing ? (editing.code||'') : nextMasterCode(CP_DEF.autoCode, allItemsForCode);
+            return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
+          }
+          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
+        }).join('')}
+      </div>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — ${editing ? 'it stays as it was assigned and can\'t be changed here.' : 'the next one is shown above and is applied when you click Add.'} Adding a new Channel Partner here stamps you as its owner; editing an existing one never changes who owns it — use the 🔗 action for that.</p>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="cp-save">${editing?'Update':'Add'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="cp-cancel">Cancel</button>':''}
+      </div>
+    </div>
+  `;
+}
+
+function wireChannelPartnersEvents(){
+  const searchEl = document.getElementById('cp-search');
+  const runSearch = () => { cpSearch = searchEl.value; render(); };
+  const goBtn = document.getElementById('cp-go');
+  if(goBtn) goBtn.onclick = runSearch;
+  if(searchEl) searchEl.addEventListener('input', runSearch);
+
+  document.querySelectorAll('[data-cp-edit]').forEach(b=>b.onclick = () => { editingCPId=b.dataset.cpEdit; linkingCPOwnerId=null; render(); });
+  document.querySelectorAll('[data-cp-toggle]').forEach(b=>b.onclick = async () => {
+    const it = DB.getAllMasters('channelPartners').find(x=>x.id===b.dataset.cpToggle);
+    const wasActive = it && it.active!==false;
+    await DB.toggleMaster('channelPartners', b.dataset.cpToggle);
+    await logAudit(wasActive?'Deactivated':'Activated', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '');
+    render();
+  });
+  if(canDeleteChannelPartner()) document.querySelectorAll('[data-cp-delete]').forEach(b=>b.onclick = async () => {
+    if(!confirm('Delete this Channel Partner permanently? This cannot be undone.')) return;
+    const it = DB.getAllMasters('channelPartners').find(x=>x.id===b.dataset.cpDelete);
+    await DB.deleteMaster('channelPartners', b.dataset.cpDelete);
+    await logAudit('Deleted', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '');
+    if(editingCPId===b.dataset.cpDelete) editingCPId=null;
+    render();
+  });
+  if(canLinkCPOwner()){
+    document.querySelectorAll('[data-cp-link-open]').forEach(b=>b.onclick = () => { linkingCPOwnerId=b.dataset.cpLinkOpen; editingCPId=null; render(); });
+    const linkCancelBtn = document.getElementById('cp-link-cancel');
+    if(linkCancelBtn) linkCancelBtn.onclick = () => { linkingCPOwnerId=null; render(); };
+    const linkSaveBtn = document.getElementById('cp-link-save');
+    if(linkSaveBtn) linkSaveBtn.onclick = async () => {
+      const targetUid = document.getElementById('cp-link-target').value;
+      if(!targetUid){ alert('Select who to link this Channel Partner to.'); return; }
+      const target = DB.getUsers().find(u=>u.uid===targetUid);
+      if(!target) return;
+      const it = DB.getAllMasters('channelPartners').find(x=>x.id===linkSaveBtn.dataset.cpLinkSave);
+      await DB.updateMaster('channelPartners', linkSaveBtn.dataset.cpLinkSave, { createdByUid: target.uid, createdByName: target.name });
+      await logAudit('Linked to Owner', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '', 'Owner set to '+target.name);
+      linkingCPOwnerId=null;
+      render();
+    };
+  }
+  const saveBtn = document.getElementById('cp-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const fields = {};
+    let ok = true;
+    CP_DEF.fields.forEach(f=>{
+      const el = document.getElementById('cf-'+f);
+      let v = el.value.trim();
+      if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
+      if(f===CP_DEF.fields[0] && v==='' ) ok = false;
+      fields[f] = v;
+    });
+    if(!ok){ alert('The first field is required.'); return; }
+    if(editingCPId){
+      await DB.updateMaster('channelPartners', editingCPId, fields);
+      await logAudit('Updated', 'Channel Partner', masterItemLabel(CP_DEF, fields));
+      editingCPId=null;
+    } else {
+      await DB.addMaster('channelPartners', fields);
+      await logAudit('Added', 'Channel Partner', masterItemLabel(CP_DEF, fields));
+    }
+    render();
+  };
+  const cancelBtn = document.getElementById('cp-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingCPId=null; render(); };
 }
 
 // ---- MANAGE USERS (own module — was folded into Masters, now standalone) --
@@ -5328,6 +5517,7 @@ function wireViewEvents(){
   if(currentView==='analytics'){ wireAnalyticsEvents(); }
   if(currentView==='configure'){ wireConfigureEvents(); }
   if(currentView==='masters'){ wireMastersEvents(); }
+  if(currentView==='channelPartners'){ wireChannelPartnersEvents(); }
   if(currentView==='landowners'){ wireLandownersEvents(); }
   if(currentView==='landParcels'){ wireLandParcelsEvents(); }
   if(currentView==='users'){ wireUsersEvents(); }
