@@ -199,6 +199,7 @@
       <button data-view="progress" id="nav-progress-btn">Progress Details</button>
       <button data-view="list">All Leads</button>
       <button data-view="reports">Reports</button>
+      <button data-view="analytics">MIS Analytics</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
       <button data-view="landowners">Landowners</button>
@@ -208,6 +209,7 @@
       <button data-view="workflow">Workflow Config</button>
       <button data-view="statusConfig">Status Config</button>
       <button data-view="pageAccess">Page Access</button>
+      <button data-view="auditTrail">Audit Trail</button>
     </nav>
     <div class="sidebar-foot" id="conn-badge"></div>
   </aside>
@@ -301,7 +303,7 @@ function refreshStagesFromDB(){
 // drive every existing Lead extent/price field exactly as before.
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1}, hectare:{label:'Hectare',sqft:107639.1}, sqm:{label:'Sq. Metre',sqft:10.7639} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', analytics:'MIS Analytics', configure:'Configure — Lead Fields', masters:'Masters', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access', auditTrail:'Audit Trail' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
@@ -336,6 +338,11 @@ const DEFAULT_VIEW_ACCESS = {
   list:      ['admin','manager','executive'],
   newLead:   ['admin','manager','executive'],
   reports:   ['admin','manager'],
+  // MIS Analytics (performance/aggregate KPIs, as distinct from Reports'
+  // raw per-record tables) — same tier as Reports: Executive doesn't get
+  // cross-team performance comparisons, matching the existing "Reports
+  // isn't for Executive" precedent.
+  analytics: ['admin','manager'],
   configure: ['admin','sysadmin'],
   masters:   ['admin','sysadmin'],
   // Landowner & Land Parcel registries (MP Developers' Land Acquisition ERP
@@ -350,6 +357,11 @@ const DEFAULT_VIEW_ACCESS = {
   workflow:    ['admin','sysadmin'],
   statusConfig:['admin','sysadmin'],
   pageAccess:  ['admin','sysadmin'],
+  // Audit Trail (system-configuration change log — see DB.addAuditEntry()'s
+  // own comment) — same default tier as Workflow/Status/Page Access: Head
+  // and Admin (sysadmin) only, since this is "who changed the system"
+  // oversight, not day-to-day lead-data work.
+  auditTrail:  ['admin','sysadmin'],
 };
 // The live, in-effect page access map — recomputed from DB via
 // refreshViewAccessFromDB() at boot, on every live DB change, and whenever
@@ -546,6 +558,15 @@ function canSeeCP(cp, user){
 // which also lists inactive ones) variants, both scoped the same way.
 function visibleChannelPartners(){ return DB.getMasters('channelPartners').filter(cp=>canSeeCP(cp, currentUser)); }
 function visibleAllChannelPartners(){ return DB.getAllMasters('channelPartners').filter(cp=>canSeeCP(cp, currentUser)); }
+// How many of the CURRENT user's visible leads a Channel Partner has
+// sourced — read from visibleLeads() (the same branch-scoped set every
+// other page uses), not DB.getAllLeads(), so a Manager never sees a count
+// that includes another branch's leads, same visibility discipline as
+// everywhere else in this app.
+function cpLeadCount(code){
+  if(!code) return 0;
+  return visibleLeads().filter(l=>l.channelPartnerCode===code).length;
+}
 
 // ---- Workflow config -------------------------------------------------------
 // Role-wise From Status -> To Status mapping (like the "Entity Wise Role And
@@ -617,14 +638,21 @@ function gateRoleLabels(fromKey, toKey){ return findGates(fromKey, toKey).map(g=
 
 // ---- Lead field configuration (drives the New Lead form + list filters) ----
 // Admin-editable on the Configure page: Visible/Mandatory/Filter per field.
+// Site Location moved to the first row and made mandatory (was further
+// down, optional) — her later request was to capture and require location
+// before anything else on this form. Village Name went the other way,
+// mandatory -> optional, since it depends on a pre-registered Villages
+// master entry existing, which isn't always true yet when a lead needs to
+// be logged quickly; Site Location is free text and always obtainable.
 const DEFAULT_FIELD_CONFIG = [
+  { field:'siteLocation',       label:'Site Location',          visible:true, mandatory:true,  filter:false },
   { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:true,  filter:false },
   { field:'leadSource',         label:'Lead Source',            visible:true, mandatory:true,  filter:true  },
   { field:'channelPartnerCode', label:'Channel Partner',        visible:true, mandatory:false, filter:true  },
+  { field:'projectCode',        label:'Project',                 visible:true, mandatory:false, filter:true  },
   { field:'assignedExecutive',  label:'Assigned Executive',     visible:true, mandatory:false, filter:true  },
-  { field:'village',            label:'Village Name',           visible:true, mandatory:true,  filter:false },
+  { field:'village',            label:'Village Name',           visible:true, mandatory:false, filter:false },
   { field:'surveyNumber',       label:'Survey Number(s)',       visible:true, mandatory:false, filter:false },
-  { field:'siteLocation',       label:'Site Location',          visible:true, mandatory:false, filter:false },
   { field:'googlePin',          label:'Google Pin / Coordinates', visible:true, mandatory:false, filter:false },
   { field:'landClassification', label:'Land Classification',    visible:true, mandatory:false, filter:false },
   { field:'extent',             label:'Total Land Extent',      visible:true, mandatory:true,  filter:false },
@@ -637,6 +665,7 @@ const DEFAULT_FIELD_CONFIG = [
 // Maps each configurable field to the New Lead form input(s) it controls.
 const FIELD_TO_INPUT = {
   leadSourceDateTime:['nl-datetime'], leadSource:['nl-source'], channelPartnerCode:['nl-cp'],
+  projectCode:['nl-project'],
   assignedExecutive:['nl-exec'], village:['nl-village'], surveyNumber:['nl-survey'],
   siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
   extent:['nl-extent-val'], price:['nl-price-val'],
@@ -655,6 +684,17 @@ const MASTER_DEFS = [
   { key:'landClasses',     label:'Land Classifications',  collection:'m_land_classes',     fields:['label'] },
   { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
   { key:'holdReasons',     label:'On-Hold Reasons',       collection:'m_hold_reasons',     fields:['label'] },
+  // Document categories (Land Acquisition ERP spec, Module 7) — admin-
+  // configurable like every other master, so the fixed starter list below
+  // is just a seed, not a hardcoded limit.
+  { key:'docCategories',   label:'Document Categories',   collection:'m_doc_categories',   fields:['label'] },
+  // Project Mapping (Land Acquisition ERP spec) — lets a lead be tied to a
+  // specific MP Developers project (see projectCode on the lead and the
+  // Reports page's Project-wise Summary). Auto-coded like Channel Partners;
+  // deliberately NOT trackOwner — a project list is company-wide, same
+  // "shared reference data" precedent as Villages/Land Classes, not
+  // Manager-branch-scoped like Leads/Channel Partners.
+  { key:'projects',        label:'Projects',               collection:'m_projects',         fields:['code','name'], autoCode:'PRJ' },
 ];
 const FIELD_LABELS = { label:'Label', code:'Code', name:'Name', phone:'Phone', commissionPct:'Commission %', taluk:'Taluk', district:'District', role:'Role' };
 
@@ -665,6 +705,47 @@ const FIELD_LABELS = { label:'Label', code:'Code', name:'Name', phone:'Phone', c
 const PREFERRED_CONTACT_METHODS = ['Phone','Email','WhatsApp','Postal','Other'];
 const PARCEL_STATUSES = ['Available','Under Negotiation','Partially Acquired','Fully Acquired','On Hold','Disputed','Dropped'];
 const YES_NO_PARTIAL = ['Yes','No','Partial'];
+// Negotiation Management (spec Module 6) — not given a fixed list in the
+// spec itself, so this is a reasonable starter set, same "fixed for now,
+// not yet its own configurable master" caveat as PARCEL_STATUSES above.
+const NEGOTIATION_STATUSES = ['Ongoing','Accepted','Rejected','Stalled','Finalized'];
+// Document Management (spec Module 7) verification states.
+const DOC_VERIFICATION_STATUSES = ['Pending','Verified','Rejected','Deficient'];
+// Legal Verification (spec Module 8) — same "fixed starter list, not yet its
+// own configurable master" caveat as the other status lists above.
+const LEGAL_TITLE_STATUSES = ['Not Started','Clear','Minor Issues','Major Issues','Disputed'];
+const ENCUMBRANCE_STATUSES = ['Not Checked','Clear','Issues Found'];
+const LITIGATION_STATUSES = ['None','Pending','Resolved'];
+const LEGAL_RISK_RATINGS = ['Low','Medium','High'];
+// Valuation (spec Module 9) methods.
+const VALUATION_METHODS = ['Guideline Value','Comparable Sales','Income Approach','Hybrid'];
+// Acquisition Proposals (spec Module 10) — a formal, versioned recommendation
+// (price/terms/mode) built from the Negotiation + Valuation history above,
+// distinct from the single stage-gate `approval` field already on a lead
+// (set when a workflow-gated stage move — e.g. "Sign-off to close as
+// Acquired" — is approved; see isGatedTransition()/wireMove()). That gate
+// decides whether a lead can MOVE stage; this log is the actual proposal
+// document a Manager/Head later acts on in the (separate, not-yet-built)
+// Approvals module.
+const PROPOSAL_STATUSES = ['Draft','Submitted','Under Review','Revised','Approved','Rejected'];
+// Spec Module 11 (Approvals): a proposer can move their own draft through
+// these pre-decision states freely, but 'Approved'/'Rejected' are reachable
+// ONLY via the dedicated Approve/Reject action below (see
+// canApproveProposal()/"no self-approval") — never by picking it from this
+// dropdown themselves, which was a real gap in the Module 10 round (anyone,
+// including the proposer, could previously just select "Approved").
+const PROPOSAL_DRAFT_STATUSES = ['Draft','Submitted','Under Review','Revised'];
+// Narrowed to her own two real modes (was a more generic 5-option starter
+// list) — Outright (a straight purchase, captured as Price) and Joint
+// Venture (captured as an Advance paid to the landowner, not a purchase
+// price) — see renderAcquisitionProposalTab()'s price/advance toggle.
+const MODE_OF_ACQUISITION = ['Outright','Joint Venture'];
+// Payments (spec Module 12) — same "fixed starter list, not yet its own
+// configurable master" caveat as the other status lists above.
+const PAYMENT_TYPES = ['Advance','Part Payment','Final Payment','JV Advance','Other'];
+const PAYMENT_MODES = ['Cash','Cheque','Bank Transfer (NEFT/RTGS)','Demand Draft','Other'];
+// Registration (spec Module 13) document types.
+const REGISTRATION_DOCUMENT_TYPES = ['Sale Deed','Joint Venture Agreement','Power of Attorney','Settlement Deed','Gift Deed','Other'];
 
 function seedMaster(key){
   const data = {
@@ -677,6 +758,11 @@ function seedMaster(key){
     landClasses: ['Agricultural','DTCP Approved Layout','Patta Land','Government Land','Disputed / Litigation','Other'].map(label=>({label})),
     dropReasons: ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'].map(label=>({label})),
     holdReasons: ['Awaiting owner decision','Budget deferred','Litigation pending','Awaiting documents','Other'].map(label=>({label})),
+    docCategories: ['Parent Documents','Sale Deed','Title Deed','Patta','Chitta','Adangal','Encumbrance Certificate','FMB Sketch','Survey Sketch','Land Tax Receipts','Legal Opinion','Power of Attorney','Identity / Ownership Supporting Document','Consent Document','Acquisition Agreement','Sale Agreement','Payment Receipt','Registration Document','Other'].map(label=>({label})),
+    projects: [
+      {code:'PRJ-01', name:'ECR Gateway Phase 2'},
+      {code:'PRJ-02', name:'SIPCOT Industrial Park Extension'},
+    ],
   };
   return data[key] || [];
 }
@@ -764,7 +850,8 @@ function seedLeads(){
     onHold:{active:false, reasonCode:'', notes:'', since:''},
     contactSubStatus:{ mediator:{contacted:false,date:''}, landowner:{contacted:false,date:''} },
     feasibility:{ technical:{status:'Not Started',notes:''}, financial:{status:'Not Started',notes:''} },
-    documents:[], negotiationLog:[], approval:{approver:'',date:'',remarks:''},
+    documents:[], negotiationLog:[], legalVerificationLog:[], valuationLog:[], acquisitionProposalLog:[], approval:{approver:'',date:'',remarks:''},
+    paymentLog:[], registrationLog:[], projectCode:'',
     finalPrice:null, finalDate:'', outcome:'',
     stageHistory:[{stage:o.stage, at:daysAgo(o.stageAge!=null?o.stageAge:o.age||0), by:o.assignedExecutive||'Karthik R', note:'Lead created'}],
     reassignmentHistory:[],
@@ -775,19 +862,42 @@ function seedLeads(){
     mk({stage:'contacted', age:9, stageAge:8, village:'Guduvancheri', siteLocation:'Behind bus depot', extentValue:60, extentUnit:'cent', priceValue:38, priceUnit:'cent', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Divya S', nextCallDate: todayStr(),
       contactSubStatus:{ mediator:{contacted:true,date:daysAgo(6)}, landowner:{contacted:false,date:''} }}),
     mk({stage:'site_visited', age:14, stageAge:4, village:'Thiruporur', siteLocation:'Off ECR link road', extentValue:1.8, extentUnit:'acre', priceValue:95, priceUnit:'ground', leadSource:'Field Survey', assignedExecutive:'Karthik R', landClassification:'DTCP Approved Layout'}),
-    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', priceValue:0.9, priceUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10),
+    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', priceValue:0.9, priceUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10), projectCode:'PRJ-02',
       feasibility:{ technical:{status:'In Progress',notes:'Awaiting soil test report'}, financial:{status:'Cleared',notes:'Within board-approved budget band'} },
       onHold:{active:true, reasonCode:'Awaiting documents', notes:'Owner arranging patta copy', since: daysAgo(5)}}),
-    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', priceValue:1.4, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R',
-      documents:[{name:'FMB Drawing', url:'(pending upload)', addedAt:daysAgo(8)},{name:'Patta Copy', url:'(pending upload)', addedAt:daysAgo(6)}]}),
-    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', priceValue:1.05, priceUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S',
+    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', priceValue:1.4, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R', projectCode:'PRJ-01',
+      documents:[{name:'FMB Drawing', url:'(pending upload)', addedAt:daysAgo(8)},{name:'Patta Copy', url:'(pending upload)', addedAt:daysAgo(6)}],
+      legalVerificationLog:[{date:daysAgo(5), titleStatus:'Minor Issues', encumbranceStatus:'Issues Found', encumbrancePeriod:'2005–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Partial', legalRiskRating:'Medium', remarks:'Name mismatch between patta and EC — owner arranging correction.', verifiedBy:'Land Manager'}],
+      // A Joint Venture example (her other real mode, alongside Outright) —
+      // captured as an Advance to the landowner, not a purchase Price.
+      acquisitionProposalLog:[{date:daysAgo(2), status:'Draft', advanceAmount:25, modeOfAcquisition:'Joint Venture', paymentSchedule:'40:60 built-up area share, advance adjusted against owner’s final share', remarks:'Owner prefers JV over outright sale.', proposedBy:'Karthik R'}]}),
+    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', priceValue:1.05, priceUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S', projectCode:'PRJ-01',
       approval:{approver:'Land Manager', date:daysAgo(10), remarks:'Approved to proceed to negotiation'},
-      negotiationLog:[{date:daysAgo(9), offerBy:'Us', amount:100, notes:'Opening offer per acre (lakh)'},{date:daysAgo(4), offerBy:'Owner', amount:112, notes:'Counter'}]}),
-    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', priceValue:0.85, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R',
+      negotiationLog:[{date:daysAgo(9), offerBy:'Us', amount:100, notes:'Opening offer per acre (lakh)'},{date:daysAgo(4), offerBy:'Owner', amount:112, notes:'Counter'}],
+      legalVerificationLog:[{date:daysAgo(12), titleStatus:'Clear', encumbranceStatus:'Clear', encumbrancePeriod:'2000–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Yes', legalRiskRating:'Low', remarks:'No encumbrance found; clear to proceed.', verifiedBy:'Land Manager'}],
+      valuationLog:[{date:daysAgo(10), method:'Guideline Value', guidelineRate:85, marketRate:108, agreedRate:100, totalValuation:320, remarks:'Guideline well below prevailing market rate for this stretch.', valuedBy:'Land Manager'}],
+      acquisitionProposalLog:[{date:daysAgo(3), status:'Draft', proposedPurchasePrice:320, modeOfAcquisition:'Outright', paymentSchedule:'20% advance on agreement, 80% on registration', remarks:'First draft, pending Owner’s response to our latest offer.', proposedBy:'Divya S'}]}),
+    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', priceValue:0.85, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R', projectCode:'PRJ-01',
       outcome:'acquired', finalPrice:0.88, finalDate:daysAgo(3),
-      approval:{approver:'MD', date:daysAgo(4), remarks:'Approved'} }),
+      approval:{approver:'MD', date:daysAgo(4), remarks:'Approved'},
+      acquisitionProposalLog:[
+        {date:daysAgo(9), status:'Draft', proposedPurchasePrice:170, modeOfAcquisition:'Outright', paymentSchedule:'25% advance, 75% on registration', remarks:'Based on initial valuation.', proposedBy:'Karthik R'},
+        {date:daysAgo(6), status:'Submitted', proposedPurchasePrice:176, modeOfAcquisition:'Outright', paymentSchedule:'25% advance, 75% on registration', remarks:'Revised up after Owner’s counter; submitted for approval.', proposedBy:'Karthik R'},
+        {date:daysAgo(4), status:'Approved', proposedPurchasePrice:176, modeOfAcquisition:'Outright', paymentSchedule:'25% advance, 75% on registration', remarks:'Approved by MD.', proposedBy:'MD'},
+      ],
+      // Payments/Registration (spec Modules 12-13) — seeded only on this one
+      // Closed/Acquired lead, matching its own approved "25% advance, 75% on
+      // registration" schedule: 44 (25% of 176) then 132 (the balance).
+      paymentLog:[
+        {date:daysAgo(3), paymentType:'Advance', mode:'Bank Transfer (NEFT/RTGS)', amount:44, referenceNumber:'NEFT/228841', paidTo:'Landowner', remarks:'25% advance on agreement, per approved proposal v3.', recordedBy:'Land Manager'},
+        {date:daysAgo(1), paymentType:'Final Payment', mode:'Bank Transfer (NEFT/RTGS)', amount:132, referenceNumber:'NEFT/229015', paidTo:'Landowner', remarks:'Balance 75% on registration.', recordedBy:'Land Manager'},
+      ],
+      registrationLog:[
+        {date:daysAgo(1), registrationNumber:'2847/2026', sroOffice:'SRO Sriperumbudur', documentType:'Sale Deed', stampDuty:12.3, registrationCharges:1.76, remarks:'Registered same day as final payment.', registeredBy:'Land Manager'},
+      ]}),
     mk({stage:'closed', age:48, stageAge:0, village:'Vandalur', siteLocation:'Near ATC road', extentValue:1.5, extentUnit:'acre', priceValue:1.3, priceUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Divya S',
-      outcome:'dropped', reasonCode:'Title / legal issue', reasonNotes:'Pending partition suit found during EC check'}),
+      outcome:'dropped', reasonCode:'Title / legal issue', reasonNotes:'Pending partition suit found during EC check',
+      legalVerificationLog:[{date:daysAgo(8), titleStatus:'Disputed', encumbranceStatus:'Issues Found', encumbrancePeriod:'1998–2026', litigationStatus:'Pending', litigationDetails:'Partition suit O.S. No. 214/2024 pending in Chengalpattu District Court', pattaChittaVerified:'No', legalRiskRating:'High', remarks:'Recommended to drop pending suit resolution.', verifiedBy:'Land Manager'}]}),
   ];
 }
 
@@ -838,6 +948,7 @@ class MemoryDB {
     this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
     this.userPageAccess = [];
     this.users = DEFAULT_USERS_SEED.map(u=>Object.assign({ id:u.uid }, u));
+    this.auditLog = [];
   }
   async init(){ /* nothing to load — already seeded in memory */ }
   ready(){ return Promise.resolve(); }
@@ -857,17 +968,17 @@ class MemoryDB {
   async reassignLead(leadId, newExecutiveName, remarks){
     const lead = this.leads.find(l=>l.id===leadId);
     if(!lead) throw new Error('Lead not found.');
-    if(!(lead.onHold && lead.onHold.active)) throw new Error('Only a Frozen (On Hold) lead can be reassigned.');
     if(!currentUser || !canReassignLead(lead)) throw new Error('You are not authorized to reassign this lead.');
     const currentExec = userByName(lead.assignedExecutive);
     const newExec = userByName(newExecutiveName);
     if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
     if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
     const manager = userByUid(currentExec.reportsTo);
+    const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
     const entry = {
       fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
       reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
-      previousStatus: 'Frozen', currentStatus: 'Frozen',
+      previousStatus: statusLabel, currentStatus: statusLabel,
     };
     const i = this.leads.findIndex(l=>l.id===leadId);
     this.leads[i] = Object.assign({}, lead, {
@@ -895,6 +1006,16 @@ class MemoryDB {
   async deleteMaster(key, id){ this.masters[key] = (this.masters[key]||[]).filter(m=>m.id!==id); }
   getFieldConfig(){ return this.fieldConfig; }
   async saveFieldConfig(rows){ this.fieldConfig = rows.map(r=>Object.assign({}, r)); }
+  // Audit Trail — a system-wide, append-only log of CONFIGURATION changes
+  // (masters, users, Workflow/Status/Page-Access/Field config) — the one
+  // category of change in this app that had NO history anywhere until now.
+  // Deliberately does NOT duplicate what every lead already tracks in its
+  // own rich append-only logs (stageHistory/negotiationLog/paymentLog/etc.)
+  // — this is for "who changed the SYSTEM, not a lead" questions. Oldest-
+  // first, same convention as every other array log in this file; the
+  // Audit Trail page reverses it for display.
+  getAuditLog(){ return this.auditLog; }
+  async addAuditEntry(entry){ this.auditLog.push(Object.assign({ id: uid('AUD'), at: new Date().toISOString() }, entry)); }
   getStages(){ return this.stages; }
   async saveStages(rows){ this.stages = rows.map(r=>Object.assign({}, r)); }
   getWorkflow(){ return this.workflow; }
@@ -977,8 +1098,9 @@ class FirestoreDB {
     this.users = [];
     this.landowners = [];
     this.landParcels = [];
+    this.auditLog = [];
     this._onChange = null;
-    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'userPageAccess', 'users', 'landowners', 'landParcels', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'userPageAccess', 'users', 'landowners', 'landParcels', 'auditLog', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
     this._readyResolvers = [];
   }
   onChange(cb){ this._onChange = cb; }
@@ -1131,6 +1253,16 @@ class FirestoreDB {
       this._markReady('landParcels');
       if(this._onChange) this._onChange();
     }, err=>{ console.error('landParcels listener error', err); this._markReady('landParcels'); });
+
+    // Audit Trail — newest 500 config-change entries, kept oldest-first in
+    // local state (same convention as MemoryDB.auditLog and every other
+    // array log in this file) by reversing the desc-ordered page right
+    // after it's read.
+    this.fsdb.collection('auditLog').orderBy('at','desc').limit(500).onSnapshot(snap=>{
+      this.auditLog = snap.docs.map(d=>Object.assign({ id:d.id }, d.data())).reverse();
+      this._markReady('auditLog');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('auditLog listener error', err); this._markReady('auditLog'); });
   }
   getLeads(){ return this.leads; }
   getLead(id){ return this.leads.find(l=>l.id===id); }
@@ -1160,17 +1292,17 @@ class FirestoreDB {
       const snap = await tx.get(ref);
       if(!snap.exists) throw new Error('Lead not found.');
       const lead = Object.assign({ id: leadId }, snap.data());
-      if(!(lead.onHold && lead.onHold.active)) throw new Error('Only a Frozen (On Hold) lead can be reassigned.');
       if(!canReassignLead(lead)) throw new Error('You are not authorized to reassign this lead.');
       const currentExec = userByName(lead.assignedExecutive);
       const newExec = userByName(newExecutiveName);
       if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
       if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
       const manager = userByUid(currentExec.reportsTo);
+      const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
       const entry = {
         fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
         reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
-        previousStatus: 'Frozen', currentStatus: 'Frozen',
+        previousStatus: statusLabel, currentStatus: statusLabel,
       };
       tx.update(ref, {
         assignedExecutive: newExec.name,
@@ -1202,6 +1334,8 @@ class FirestoreDB {
   }
   getFieldConfig(){ return this.fieldConfig; }
   async saveFieldConfig(rows){ await this.fsdb.collection('settings').doc('leadFieldConfig').set({ rows }); }
+  getAuditLog(){ return this.auditLog; }
+  async addAuditEntry(entry){ await this.fsdb.collection('auditLog').add(Object.assign({ at: firebase.firestore.FieldValue.serverTimestamp() }, entry)); }
   getStages(){ return this.stages; }
   async saveStages(rows){ await this.fsdb.collection('settings').doc('stages').set({ rows }); }
   getWorkflow(){ return this.workflow; }
@@ -1311,26 +1445,25 @@ function canModifyLeadDetails(lead){
 // discipline as leadEditMode, for the same reason — stale form state must
 // never leak from one lead to the next.
 let reassignMode = false;
-// ---- Frozen Lead Reassignment --------------------------------------------
-// "Frozen" (the request's term) maps onto this app's existing On-Hold flag
-// (l.onHold.active) — there's no separate "Frozen" pipeline stage, and
-// On-Hold is the only lead-level "paused, waiting on something" status
-// that already exists, with its own reason/notes/since fields and its own
-// "Stage & Actions" fieldset. Reassignment is offered ONLY on a lead
-// that's actually on hold.
+// ---- Lead Assignment / Reassignment ---------------------------------------
+// Originally built "Frozen Lead Reassignment" — reassignment offered ONLY
+// on a lead that's On Hold (l.onHold.active), the "Frozen" the original
+// request meant since there's no separate Frozen pipeline stage. Later
+// widened to a general "Assign to Executive" option, available on ANY
+// lead regardless of On-Hold status — same eligibility rules below,
+// unchanged, just no longer gated on l.onHold.active.
 // Who may reassign reuses the exact same Reports-To tree as every other
 // access rule in this app: Manager, within their own reporting Executives;
 // Head, within their own reporting branch (not blanket, unlike most other
-// Head overrides elsewhere — the request specifically frames Head's
-// permission as scoped to "the relevant Manager's team", so this mirrors
-// visibleLeads()'s own branch-scoping instead of the usual Head-always-
-// wins shortcut); Admin (sysadmin), unconditionally, same full-access
-// precedent as everywhere else. An Executive is never authorized to
+// Head overrides elsewhere — the original request specifically framed
+// Head's permission as scoped to "the relevant Manager's team", so this
+// mirrors visibleLeads()'s own branch-scoping instead of the usual Head-
+// always-wins shortcut); Admin (sysadmin), unconditionally, same full-
+// access precedent as everywhere else. An Executive is never authorized to
 // reassign — no existing business rule grants it — so they never see the
 // option at all, regardless of whose lead it is.
 function canReassignLead(lead){
   if(!currentUser || !lead) return false;
-  if(!(lead.onHold && lead.onHold.active)) return false; // only a Frozen/On-Hold lead is ever eligible
   if(currentUser.role==='sysadmin') return true;
   if(currentUser.role==='admin') return isInHeadBranch(currentUser.uid, lead.assignedExecutive) || hasOrphanedManagerChain(lead.assignedExecutive);
   if(currentUser.role==='manager') return isDirectReport(currentUser.uid, lead.assignedExecutive);
@@ -1366,6 +1499,161 @@ function canDeleteLandRegistry(){
   return !!(currentUser && currentUser.role !== 'executive');
 }
 function landownerById(id){ return (DB.getAllLandowners()||[]).find(o=>o.id===id); }
+// Document verification (spec Module 7: "legal clearance must be issued by
+// an authorized user", "must not be inferred merely because a document was
+// uploaded") — same narrower-than-the-roles-above-it precedent as
+// canDeleteLandRegistry(): any Executive can upload, only Manager/Head/
+// Admin can mark a document Verified/Rejected/Deficient.
+function canVerifyDocument(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+// Legal Verification (spec Module 8) and Valuation (spec Module 9) are the
+// spec's "Legal Team" and "Accounts Team" roles' own work — this app's 4
+// roles don't have separate Legal/Accounts logins, so (same precedent as
+// canVerifyDocument()/canDeleteLandRegistry()) both are gated to the
+// Manager/Head/Admin tier, keeping Executives able to view every record but
+// not record a legal finding or a valuation themselves.
+function canRecordLegalOrValuation(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+// Approvals (spec Module 11) — same Manager/Head/Admin tier as the two
+// helpers above, PLUS the spec's explicit "no self-approval" rule: whoever
+// proposed the version being decided on can neither approve NOR reject it
+// themselves (see renderAcquisitionProposalTab()'s approvalBlock) — the
+// decision, either way, has to come from a different Manager/Head/Admin.
+// Checked by name (this app has no separate per-proposal submitter uid
+// captured, only the recorded display name — consistent with every other
+// "recordedBy"/"verifiedBy" field in this file).
+function canApproveProposal(proposal){
+  if(!currentUser || currentUser.role==='executive') return false;
+  if(proposal && proposal.proposedBy && proposal.proposedBy===currentUser.name) return false;
+  return true;
+}
+// Negotiation Management (spec Module 6) — a lead's negotiationLog entries
+// are NEVER overwritten (each round is its own appended record, same
+// append-only discipline as stageHistory/reassignmentHistory), so this
+// summary is always DERIVED live from that history, never itself stored —
+// there is no separate mutable "total" field for the browser to desync
+// from the real entries. offerBy:'Owner' on an entry is read as the
+// landowner's side of that round (their ask); 'Us'/'Mediator' is read as
+// our side (an offer). Duration is first-entry-date to most-recent-entry-
+// date (or today, if there's only one entry so far).
+function negotiationSummary(l){
+  const log = (l.negotiationLog||[]).slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  if(!log.length) return null;
+  const asks = log.filter(n=>n.offerBy==='Owner' && n.amount!=null);
+  const ourOffers = log.filter(n=>n.offerBy!=='Owner' && n.amount!=null);
+  const initialAsk = asks.length ? asks[0].amount : null;
+  const lowestOffer = ourOffers.length ? Math.min(...ourOffers.map(n=>n.amount)) : null;
+  const latest = log[log.length-1];
+  const currentProposed = ourOffers.length ? ourOffers[ourOffers.length-1].amount : latest.amount;
+  const changeFromAsk = (initialAsk!=null && currentProposed!=null) ? (currentProposed - initialAsk) : null;
+  const first = log[0];
+  const durationDays = daysBetween(new Date(first.date), latest===first ? new Date() : new Date(latest.date));
+  return { initialAsk, lowestOffer, latest, currentProposed, changeFromAsk, durationDays };
+}
+// Legal Verification (spec Module 8) — same append-only discipline as
+// negotiationLog: a legal finding is never edited after the fact (a status
+// can change — e.g. a litigation resolves — but that's recorded as a NEW
+// entry, not a rewrite of the old one, so the full history of what was
+// known and when is preserved). "Current status" is simply the most recent
+// entry; nothing here is a separate mutable field.
+function legalVerificationSummary(l){
+  const log = (l.legalVerificationLog||[]).slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  if(!log.length) return null;
+  return { latest: log[log.length-1], count: log.length };
+}
+// Valuation (spec Module 9) — same append-only history as above. The
+// "Current Negotiated Value" line is read live from negotiationSummary()
+// rather than re-entered here, so the two tabs can never disagree about
+// what's actually been offered; Variance vs Guideline is derived from that
+// plus the latest valuation entry's own guideline rate, never stored.
+function valuationSummary(l){
+  const log = (l.valuationLog||[]).slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  if(!log.length) return null;
+  const latest = log[log.length-1];
+  const neg = negotiationSummary(l);
+  const negotiated = neg ? neg.currentProposed : null;
+  const variancePct = (negotiated!=null && latest.guidelineRate) ? (((negotiated - latest.guidelineRate) / latest.guidelineRate) * 100) : null;
+  return { latest, count: log.length, negotiated, variancePct };
+}
+// Acquisition Proposals (spec Module 10) — same append-only versioning as
+// Negotiation/Legal/Valuation above: each draft/revision/decision is its
+// own permanent entry (log.length at save time becomes that entry's
+// version number), never an edit of an earlier one, so the full trail of
+// what was proposed and when survives a later revision or rejection.
+function proposalSummary(l){
+  const log = (l.acquisitionProposalLog||[]).slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  if(!log.length) return null;
+  return { latest: log[log.length-1], version: log.length };
+}
+// Payments (spec Module 12) and Registration (spec Module 13) are the
+// spec's own "Accounts Team"/registration-desk work — this app's 4 roles
+// have no separate Accounts/Registration login, so (same precedent as
+// canRecordLegalOrValuation()/canApproveProposal()) both are gated to the
+// Manager/Head/Admin tier; an Executive can view every entry but not
+// record a payment or a registration themselves.
+function canRecordFinancialEntry(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+// Payments — same append-only discipline as every other log in this file:
+// a payment is a permanent entry, never edited after the fact. "Total
+// Agreed Value" is read live from proposalSummary() (via
+// proposalAmountValue(), defined alongside renderAcquisitionProposalTab())
+// and ONLY once the latest proposal version is actually 'Approved' — before
+// that there's no settled figure to measure payments against, so Balance
+// Due intentionally shows '—' rather than a misleading number.
+function paymentSummary(l){
+  const log = (l.paymentLog||[]);
+  const totalPaid = log.reduce((s,p)=> s + (Number(p.amount)||0), 0);
+  const prop = proposalSummary(l);
+  const agreedTotal = (prop && prop.latest.status==='Approved') ? proposalAmountValue(prop.latest) : null;
+  const balanceDue = agreedTotal!=null ? (agreedTotal - totalPaid) : null;
+  const sorted = log.slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  return { count: log.length, totalPaid, agreedTotal, balanceDue, lastPaymentDate: sorted.length ? sorted[sorted.length-1].date : null };
+}
+// Registration — same append-only history as Legal Verification/Valuation:
+// a later correction or re-registration is a NEW entry, never a rewrite of
+// an earlier one. "Current" is simply the most recent entry.
+function registrationSummary(l){
+  const log = (l.registrationLog||[]).slice().sort((a,b)=> new Date(a.date||0) - new Date(b.date||0));
+  if(!log.length) return null;
+  return { latest: log[log.length-1], count: log.length };
+}
+// Project Mapping — resolves a lead's stored projectCode against the
+// Projects master for display, same "store the code, look up the label
+// live" pattern as Channel Partner. Never stores the project's name on the
+// lead itself, so a later project rename can't leave stale labels behind.
+function projectLabel(code){
+  if(!code) return '—';
+  const p = DB.getMasters('projects').find(p=>p.code===code);
+  return p ? (p.code+' — '+p.name) : code;
+}
+// ---- Audit Trail -----------------------------------------------------------
+// One call site per system-configuration write (Masters, Users, Workflow
+// Config, Status Config, Page Access incl. per-user overrides, Lead Field
+// Configuration) — see DB.addAuditEntry()'s own comment for why this is
+// scoped to configuration changes only, not a duplicate of each lead's own
+// already-rich history. Never throws/blocks the action it's logging — a
+// failed audit write is swallowed (logged to console only), same
+// best-effort spirit as this app's other non-critical side effects.
+// Prefers a human-readable name/label over an auto-generated code (Channel
+// Partners/Projects) so an Audit Trail entry reads as "Added Project —
+// ECR Gateway Phase 2", not just a bare "PRJ-01" — falling back to
+// whichever field the master actually has if neither name/label exists.
+function masterItemLabel(def, item){
+  return item.name || item.label || item[def.fields[0]] || '';
+}
+async function logAudit(action, entityType, entityLabel, notes){
+  if(!DB || typeof DB.addAuditEntry !== 'function') return;
+  try{
+    await DB.addAuditEntry({
+      actor: currentUser ? currentUser.name : '',
+      actorRole: currentUser ? (ROLE_LABELS[currentUser.role]||currentUser.role) : '',
+      action, entityType, entityLabel: entityLabel||'', notes: notes||'',
+    });
+  }catch(err){ console.error('Audit log write failed', err); }
+}
 // A parcel's Balance Available Extent, in sqft: Total Recorded minus
 // Previously Acquired minus Proposed Acquisition (all converted to a
 // common unit first since the three fields can each use a different one).
@@ -1612,7 +1900,7 @@ function applyRoleVisibility(){
     // Shared by Head and the new Admin role — show the "System" group
     // whenever the signed-in user can open at least one of the pages under
     // it, rather than hardcoding a single role.
-    const systemViews = ['users','workflow','statusConfig','pageAccess'];
+    const systemViews = ['users','workflow','statusConfig','pageAccess','auditTrail'];
     const hasSystemAccess = systemViews.some(v => canAccessView(v));
     adminLabel.style.display = hasSystemAccess ? '' : 'none';
   }
@@ -1734,13 +2022,18 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', source:'', exec:'', channelPartner:'', project:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
 let selectedLeadIds = new Set();
 let currentMasterKey = MASTER_DEFS[0].key;
 let editingMasterId = null;
+// Type-and-search box on the Masters page — currently only surfaced for
+// Channel Partners (search by name/code/mobile number, see renderMasters())
+// — reset whenever the master table is switched so a stale filter never
+// silently hides rows on a different master.
+let masterSearch = '';
 let editingLandownerId = null;
 let editingParcelId = null;
 // Draft list of {landownerId, landownerName, ownershipSharePct} rows for
@@ -1757,6 +2050,7 @@ let pendingParcelPrefill = null;
 // Progress Details is one page with its own Status/Source/Channel
 // Partner/Executive/Date filter panel and a single results table.
 let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' };
+let auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' };
 // ---- Browser Back/Forward support ------------------------------------
 // Every top-level view change pushes a history entry (#dashboard, #list, …)
 // so the browser's Back button steps back through in-app pages instead of
@@ -1774,6 +2068,7 @@ function render(){
   else if(currentView==='list') root.innerHTML = renderList();
   else if(currentView==='newLead') root.innerHTML = renderNewLeadView();
   else if(currentView==='reports') root.innerHTML = renderReports();
+  else if(currentView==='analytics') root.innerHTML = renderAnalytics();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
   else if(currentView==='landowners') root.innerHTML = renderLandownersView();
@@ -1782,6 +2077,7 @@ function render(){
   else if(currentView==='workflow') root.innerHTML = renderWorkflowView();
   else if(currentView==='statusConfig') root.innerHTML = renderStatusConfigView();
   else if(currentView==='pageAccess') root.innerHTML = renderPageAccessView();
+  else if(currentView==='auditTrail') root.innerHTML = renderAuditTrailView();
   wireViewEvents();
 
   const wantedHash = '#' + currentView;
@@ -1825,6 +2121,12 @@ function fieldConfigMap(){
 function leadExtentSqft(l){ return extentSqft(l.extentValue, l.extentUnit); }
 function leadPricePerSqft(l){ return pricePerSqft(l.priceValue, l.priceUnit); }
 function leadValue(l){ return leadExtentSqft(l) * leadPricePerSqft(l); }
+// Final Price (set when a lead is closed as Acquired — see renderTransitionBlock()'s
+// isClosing branch) is a per-unit rate in the SAME priceUnit as the lead's own
+// Quoted Price, never a total — same unit-conversion pattern as leadValue()
+// above, just reading finalPrice instead of priceValue, for MIS Analytics'
+// "Acquired Value" (the actual closing rate, not the original ask).
+function leadFinalValue(l){ return l.finalPrice==null ? null : leadExtentSqft(l) * pricePerSqft(l.finalPrice, l.priceUnit); }
 function isClosed(l){ return l.stage==='closed'; }
 function isActive(l){ return !isClosed(l); }
 function daysInStage(l){
@@ -1850,6 +2152,7 @@ function leadMatchesFilters(l, f){
   if(f.excludeClosed && l.stage === 'closed') return false;
   if(f.source && l.leadSource !== f.source) return false;
   if(f.channelPartner && l.channelPartnerCode !== f.channelPartner) return false;
+  if(f.project && l.projectCode !== f.project) return false;
   if(f.exec && l.assignedExecutive !== f.exec) return false;
   if(f.dateFrom){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d < f.dateFrom) return false; }
   if(f.dateTo){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d > f.dateTo) return false; }
@@ -2053,10 +2356,71 @@ function exportRowsPDF(rows, filename, title){
 }
 function leadsReportRows(){
   return visibleLeads().map(l=>({
-    'Lead ID': l.leadId, Village: l.village||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
+    'Lead ID': l.leadId, Village: l.village||'', Project: l.projectCode||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
     'Channel Partner': l.channelPartnerCode||'', Executive: l.assignedExecutive||'',
     'Lead Date': (l.leadSourceDateTime||'').slice(0,10), 'On Hold': (l.onHold&&l.onHold.active)?'Yes':'No', Outcome: l.outcome||''
   }));
+}
+// Payments Report (spec Module 12) — one row per recorded payment, flattened
+// across every lead this role can see (same visibleLeads() scoping as every
+// other report here).
+function paymentReportRows(){
+  const rows = [];
+  visibleLeads().forEach(l=>{
+    (l.paymentLog||[]).forEach(p=>{
+      rows.push({
+        'Lead ID': l.leadId, Village: l.village||'', Project: l.projectCode||'',
+        Date: (p.date||'').slice(0,10), Type: p.paymentType||'', Mode: p.mode||'',
+        Amount: p.amount, 'Reference No.': p.referenceNumber||'', 'Paid To': p.paidTo||'',
+        'Recorded By': p.recordedBy||'', Remarks: p.remarks||'',
+      });
+    });
+  });
+  rows.sort((a,b)=> (b.Date||'').localeCompare(a.Date||''));
+  return rows;
+}
+// Registration Report (spec Module 13) — same flattening pattern as Payments.
+function registrationReportRows(){
+  const rows = [];
+  visibleLeads().forEach(l=>{
+    (l.registrationLog||[]).forEach(r=>{
+      rows.push({
+        'Lead ID': l.leadId, Village: l.village||'', Project: l.projectCode||'',
+        'Registration No.': r.registrationNumber||'', 'Registration Date': (r.date||'').slice(0,10),
+        'SRO Office': r.sroOffice||'', 'Document Type': r.documentType||'',
+        'Stamp Duty': r.stampDuty, 'Registration Charges': r.registrationCharges,
+        'Registered By': r.registeredBy||'',
+      });
+    });
+  });
+  rows.sort((a,b)=> (b['Registration Date']||'').localeCompare(a['Registration Date']||''));
+  return rows;
+}
+// Project-wise Summary (Project Mapping) — one row per Project master entry
+// plus a trailing "Unassigned" row for any visible lead with no (or an
+// unknown) projectCode, so every visible lead is accounted for exactly
+// once. Extent is normalized to Acres (via leadExtentSqft()/sqftToUnit(),
+// the same unit-conversion helpers the Overview tab already uses) since
+// leads can each quote their own extent in a different unit.
+function projectSummaryRows(){
+  const leads = visibleLeads();
+  const projects = DB.getMasters('projects');
+  const groups = projects.map(p=>({ label: p.code+' — '+p.name, leads: leads.filter(l=>l.projectCode===p.code) }));
+  const knownCodes = new Set(projects.map(p=>p.code));
+  const unassigned = leads.filter(l=>!l.projectCode || !knownCodes.has(l.projectCode));
+  if(unassigned.length) groups.push({ label:'Unassigned / No Project', leads: unassigned });
+  return groups.map(g=>{
+    const acquired = g.leads.filter(l=>l.outcome==='acquired').length;
+    const dropped = g.leads.filter(l=>l.outcome==='dropped').length;
+    const activeCount = g.leads.length - acquired - dropped;
+    const totalExtentSqft = g.leads.reduce((s,l)=> s + leadExtentSqft(l), 0);
+    const totalPaid = g.leads.reduce((s,l)=> s + paymentSummary(l).totalPaid, 0);
+    return {
+      Project: g.label, 'Total Leads': g.leads.length, Active: activeCount, Acquired: acquired, Dropped: dropped,
+      'Total Extent (Acres)': Number(sqftToUnit(totalExtentSqft,'acre').toFixed(2)),
+      'Total Payments': Number(totalPaid.toFixed(2)),
+    };
+  });
 }
 function siteVisitReportRows(){
   const rows = [];
@@ -2076,6 +2440,9 @@ function siteVisitReportRows(){
 function renderReports(){
   const leads = visibleLeads();
   const visits = siteVisitReportRows();
+  const payments = paymentReportRows();
+  const registrations = registrationReportRows();
+  const projectRows = projectSummaryRows();
 
   const leadsRows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
       <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
@@ -2085,6 +2452,21 @@ function renderReports(){
   const visitRows = visits.map(v=>`<tr>
       <td><b>${v['Lead ID']}</b></td><td>${v.Village}</td><td>${fmtDate(v['Visited On'])}</td><td>${v['Logged By']||'—'}</td><td>${v.Executive||'—'}</td>
     </tr>`).join('') || '<tr><td colspan="5" class="empty">No site visits recorded yet — a visit is logged automatically when a lead moves to the Site Visited stage.</td></tr>';
+
+  const paymentRows = payments.map(p=>`<tr>
+      <td><b>${p['Lead ID']}</b></td><td>${p.Village||'—'}</td><td>${fmtDate(p.Date)}</td><td>${p.Type||'—'}</td>
+      <td>${p.Mode||'—'}</td><td>${fmtNum(p.Amount)}</td><td>${p['Reference No.']||'—'}</td><td>${p['Recorded By']||'—'}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">No payments recorded yet.</td></tr>';
+
+  const regRows = registrations.map(r=>`<tr>
+      <td><b>${r['Lead ID']}</b></td><td>${r.Village||'—'}</td><td>${r['Registration No.']||'—'}</td><td>${fmtDate(r['Registration Date'])}</td>
+      <td>${r['SRO Office']||'—'}</td><td>${r['Document Type']||'—'}</td><td>${r['Registered By']||'—'}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No registrations recorded yet.</td></tr>';
+
+  const projRows = projectRows.map(p=>`<tr>
+      <td><b>${p.Project}</b></td><td>${p['Total Leads']}</td><td>${p.Active}</td><td>${p.Acquired}</td><td>${p.Dropped}</td>
+      <td>${fmtNum(p['Total Extent (Acres)'])}</td><td>${fmtNum(p['Total Payments'])}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No projects defined yet — add one under Masters.</td></tr>';
 
   return `
     <div class="page-header"><h1>Reports</h1></div>
@@ -2099,12 +2481,39 @@ function renderReports(){
     </div>
 
     <h2 class="section-title">Site Visit Report <span class="tag">${visits.length} visit${visits.length===1?'':'s'} recorded</span></h2>
-    <div class="card">
+    <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
         <button class="btn btn-sm btn-ghost" id="rep-visits-excel">⬇ Export Excel</button>
         <button class="btn btn-sm btn-ghost" id="rep-visits-pdf">⬇ Export PDF</button>
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Visited On</th><th>Logged By</th><th>Executive</th></tr>${visitRows}</table></div>
+    </div>
+
+    <h2 class="section-title">Payments Report <span class="tag">${payments.length} payment${payments.length===1?'':'s'} recorded</span></h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="rep-payments-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="rep-payments-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Date</th><th>Type</th><th>Mode</th><th>Amount</th><th>Reference No.</th><th>Recorded By</th></tr>${paymentRows}</table></div>
+    </div>
+
+    <h2 class="section-title">Registration Report <span class="tag">${registrations.length} registration${registrations.length===1?'':'s'} recorded</span></h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="rep-registrations-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="rep-registrations-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Registration No.</th><th>Date</th><th>SRO Office</th><th>Document Type</th><th>Registered By</th></tr>${regRows}</table></div>
+    </div>
+
+    <h2 class="section-title">Project-wise Summary <span class="tag">${projectRows.length} project${projectRows.length===1?'':'s'}</span></h2>
+    <div class="card">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="rep-projects-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="rep-projects-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Project</th><th>Total Leads</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Total Extent (Acres)</th><th>Total Payments</th></tr>${projRows}</table></div>
     </div>
   `;
 }
@@ -2114,6 +2523,179 @@ function wireReportsEvents(){
   const lp = document.getElementById('rep-leads-pdf');   if(lp) lp.onclick = () => exportRowsPDF(leadsReportRows(), 'Land_Leads_Report.pdf', 'Leads Report');
   const ve = document.getElementById('rep-visits-excel'); if(ve) ve.onclick = () => exportRowsExcel(siteVisitReportRows(), 'Site_Visit_Report.xlsx', 'Site Visits');
   const vp = document.getElementById('rep-visits-pdf');   if(vp) vp.onclick = () => exportRowsPDF(siteVisitReportRows(), 'Site_Visit_Report.pdf', 'Site Visit Report');
+  const pe = document.getElementById('rep-payments-excel'); if(pe) pe.onclick = () => exportRowsExcel(paymentReportRows(), 'Payments_Report.xlsx', 'Payments');
+  const pp = document.getElementById('rep-payments-pdf');   if(pp) pp.onclick = () => exportRowsPDF(paymentReportRows(), 'Payments_Report.pdf', 'Payments Report');
+  const re = document.getElementById('rep-registrations-excel'); if(re) re.onclick = () => exportRowsExcel(registrationReportRows(), 'Registration_Report.xlsx', 'Registrations');
+  const rp = document.getElementById('rep-registrations-pdf');   if(rp) rp.onclick = () => exportRowsPDF(registrationReportRows(), 'Registration_Report.pdf', 'Registration Report');
+  const je = document.getElementById('rep-projects-excel'); if(je) je.onclick = () => exportRowsExcel(projectSummaryRows(), 'Project_Summary_Report.xlsx', 'Projects');
+  const jp = document.getElementById('rep-projects-pdf');   if(jp) jp.onclick = () => exportRowsPDF(projectSummaryRows(), 'Project_Summary_Report.pdf', 'Project-wise Summary');
+}
+
+// ---- MIS ANALYTICS ---------------------------------------------------------
+// Distinct from Reports above: Reports exports raw per-record rows (one line
+// per lead/payment/registration); this page is aggregated KPIs — per-
+// Executive and per-source/per-Channel-Partner performance, stage aging,
+// and a company-wide financial rollup. Same visibleLeads()/visibleExecutives()/
+// visibleChannelPartners() scoping as everywhere else, so a Manager's
+// numbers are their own branch's, never company-wide.
+function executivePerformanceRows(){
+  return visibleExecutives().map(e=>{
+    const leads = visibleLeads().filter(l=>l.assignedExecutive===e.name);
+    const acquired = leads.filter(l=>l.outcome==='acquired');
+    const dropped = leads.filter(l=>l.outcome==='dropped').length;
+    const activeCount = leads.length - acquired.length - dropped;
+    const overdue = leads.filter(l=>isActive(l) && isOverdueStage(l)).length;
+    const closeDurations = acquired.filter(l=>l.finalDate).map(l=>daysBetween(new Date(l.createdAt), new Date(l.finalDate)));
+    const avgDaysToClose = closeDurations.length ? Math.round(closeDurations.reduce((s,d)=>s+d,0)/closeDurations.length) : null;
+    return {
+      Executive: e.name, 'Total Leads': leads.length, Active: activeCount, Acquired: acquired.length, Dropped: dropped,
+      'Conversion %': leads.length ? Number((acquired.length/leads.length*100).toFixed(1)) : 0,
+      'Avg Days to Close': avgDaysToClose!=null ? avgDaysToClose : '—',
+      'Overdue (Past SLA)': overdue,
+    };
+  });
+}
+function sourcePerformanceRows(){
+  const sources = DB.getMasters('leadSources');
+  return sources.map(s=>{
+    const leads = visibleLeads().filter(l=>l.leadSource===s.label);
+    const acquired = leads.filter(l=>l.outcome==='acquired').length;
+    return {
+      Source: s.label, 'Total Leads': leads.length, Acquired: acquired,
+      'Conversion %': leads.length ? Number((acquired/leads.length*100).toFixed(1)) : 0,
+    };
+  }).filter(r=>r['Total Leads']>0);
+}
+function channelPartnerPerformanceRows(){
+  return visibleChannelPartners().map(c=>{
+    const leads = visibleLeads().filter(l=>l.channelPartnerCode===c.code);
+    const acquired = leads.filter(l=>l.outcome==='acquired').length;
+    return {
+      'Channel Partner': c.code+' — '+c.name, 'Leads Sourced': leads.length, Acquired: acquired,
+      'Conversion %': leads.length ? Number((acquired/leads.length*100).toFixed(1)) : 0,
+    };
+  }).filter(r=>r['Leads Sourced']>0);
+}
+// Current dwell time, not a historical average across every lead that ever
+// passed through a stage (stageHistory doesn't retain a per-visit exit
+// timestamp for a stage a lead has since left) — same live-snapshot spirit
+// as the Dashboard's own Ageing Alerts, just rolled up per stage instead of
+// listed per lead.
+function stageAgingRows(){
+  const leads = visibleLeads().filter(isActive);
+  return STAGES.filter(s=>s.key!=='closed').map(s=>{
+    const inStage = leads.filter(l=>l.stage===s.key);
+    const days = inStage.map(daysInStage);
+    const avgDays = days.length ? Math.round(days.reduce((a,b)=>a+b,0)/days.length) : 0;
+    const overdue = inStage.filter(isOverdueStage).length;
+    return { Stage: s.label, 'Leads Currently In Stage': inStage.length, 'SLA (days)': s.sla!=null?s.sla:'—', 'Avg Days In Stage': days.length?avgDays:'—', 'Overdue (Past SLA)': overdue };
+  });
+}
+// A single company/branch-wide financial rollup — kept as Metric/Value pairs
+// (rather than one-row-per-lead like the other sections) since these are
+// aggregate totals, not per-entity comparisons. Pipeline Value is the
+// QUOTED value of everything still open (leadValue()); Acquired Value uses
+// the actual closing rate (leadFinalValue()) rather than the original ask;
+// Collected/Outstanding are summed straight from every visible lead's own
+// paymentSummary() — never re-derived or stored separately, same
+// "read live from the existing per-lead logs" discipline as Project-wise
+// Summary on the Reports page.
+function financialSummaryRows(){
+  const leads = visibleLeads();
+  const pipelineValue = leads.filter(isActive).reduce((s,l)=> s + leadValue(l), 0);
+  const acquiredLeads = leads.filter(l=>l.outcome==='acquired');
+  const acquiredValue = acquiredLeads.reduce((s,l)=> s + (leadFinalValue(l)||0), 0);
+  const totalCollected = leads.reduce((s,l)=> s + paymentSummary(l).totalPaid, 0);
+  const totalOutstanding = leads.reduce((s,l)=>{ const b = paymentSummary(l).balanceDue; return s + (b!=null && b>0 ? b : 0); }, 0);
+  return [
+    { Metric:'Pipeline Value (open leads, quoted)', Value: Number(pipelineValue.toFixed(2)) },
+    { Metric:'Acquired Value (closing rate, '+acquiredLeads.length+' lead(s))', Value: Number(acquiredValue.toFixed(2)) },
+    { Metric:'Total Collected (all payments)', Value: Number(totalCollected.toFixed(2)) },
+    { Metric:'Total Outstanding (Approved proposals, unpaid balance)', Value: Number(totalOutstanding.toFixed(2)) },
+  ];
+}
+function renderAnalytics(){
+  const execRows = executivePerformanceRows();
+  const srcRows = sourcePerformanceRows();
+  const cpRows = channelPartnerPerformanceRows();
+  const agingRows = stageAgingRows();
+  const finRows = financialSummaryRows();
+
+  const execHtml = execRows.map(r=>`<tr>
+      <td><b>${r.Executive}</b></td><td>${r['Total Leads']}</td><td>${r.Active}</td><td>${r.Acquired}</td><td>${r.Dropped}</td>
+      <td>${r['Conversion %']}%</td><td>${r['Avg Days to Close']}</td><td>${r['Overdue (Past SLA)']}</td>
+    </tr>`).join('') || `<tr><td colspan="8" class="empty">No executives to report on yet.</td></tr>`;
+  const srcHtml = srcRows.map(r=>`<tr><td><b>${r.Source}</b></td><td>${r['Total Leads']}</td><td>${r.Acquired}</td><td>${r['Conversion %']}%</td></tr>`).join('')
+    || `<tr><td colspan="4" class="empty">No leads yet.</td></tr>`;
+  const cpHtml = cpRows.map(r=>`<tr><td><b>${r['Channel Partner']}</b></td><td>${r['Leads Sourced']}</td><td>${r.Acquired}</td><td>${r['Conversion %']}%</td></tr>`).join('')
+    || `<tr><td colspan="4" class="empty">No Channel-Partner-sourced leads yet.</td></tr>`;
+  const agingHtml = agingRows.map(r=>`<tr>
+      <td><b>${r.Stage}</b></td><td>${r['Leads Currently In Stage']}</td><td>${r['SLA (days)']}</td>
+      <td>${r['Avg Days In Stage']}</td><td style="${r['Overdue (Past SLA)']>0?'color:var(--danger,#c0392b);font-weight:600;':''}">${r['Overdue (Past SLA)']}</td>
+    </tr>`).join('');
+  const finHtml = finRows.map(r=>`<tr><td>${r.Metric}</td><td><b>${fmtNum(r.Value)}</b></td></tr>`).join('');
+
+  return `
+    <div class="page-header"><h1>MIS Analytics</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Aggregated performance and financial KPIs — for per-record detail, see the Reports page instead. Scoped the same way every other page here is: a Manager sees their own branch's numbers, Head/Admin see everything visible to them.</p>
+
+    <h2 class="section-title">Executive Performance</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="an-exec-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="an-exec-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Executive</th><th>Total Leads</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Conversion %</th><th>Avg Days to Close</th><th>Overdue (Past SLA)</th></tr>${execHtml}</table></div>
+    </div>
+
+    <h2 class="section-title">Source-wise Performance</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="an-source-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="an-source-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Source</th><th>Total Leads</th><th>Acquired</th><th>Conversion %</th></tr>${srcHtml}</table></div>
+    </div>
+
+    <h2 class="section-title">Channel Partner Performance</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="an-cp-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="an-cp-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Channel Partner</th><th>Leads Sourced</th><th>Acquired</th><th>Conversion %</th></tr>${cpHtml}</table></div>
+    </div>
+
+    <h2 class="section-title">Stage Aging</h2>
+    <div class="card" style="margin-bottom:20px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="an-aging-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="an-aging-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Stage</th><th>Leads Currently In Stage</th><th>SLA (days)</th><th>Avg Days In Stage</th><th>Overdue (Past SLA)</th></tr>${agingHtml}</table></div>
+    </div>
+
+    <h2 class="section-title">Financial Summary</h2>
+    <div class="card">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
+        <button class="btn btn-sm btn-ghost" id="an-fin-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="an-fin-pdf">⬇ Export PDF</button>
+      </div>
+      <div style="overflow-x:auto;"><table><tr><th>Metric</th><th>Value</th></tr>${finHtml}</table></div>
+    </div>
+  `;
+}
+function wireAnalyticsEvents(){
+  const ee = document.getElementById('an-exec-excel'); if(ee) ee.onclick = () => exportRowsExcel(executivePerformanceRows(), 'Executive_Performance.xlsx', 'Executive Performance');
+  const ep = document.getElementById('an-exec-pdf');   if(ep) ep.onclick = () => exportRowsPDF(executivePerformanceRows(), 'Executive_Performance.pdf', 'Executive Performance');
+  const se = document.getElementById('an-source-excel'); if(se) se.onclick = () => exportRowsExcel(sourcePerformanceRows(), 'Source_Performance.xlsx', 'Source Performance');
+  const sp = document.getElementById('an-source-pdf');   if(sp) sp.onclick = () => exportRowsPDF(sourcePerformanceRows(), 'Source_Performance.pdf', 'Source-wise Performance');
+  const ce = document.getElementById('an-cp-excel'); if(ce) ce.onclick = () => exportRowsExcel(channelPartnerPerformanceRows(), 'Channel_Partner_Performance.xlsx', 'Channel Partners');
+  const cp = document.getElementById('an-cp-pdf');   if(cp) cp.onclick = () => exportRowsPDF(channelPartnerPerformanceRows(), 'Channel_Partner_Performance.pdf', 'Channel Partner Performance');
+  const ae = document.getElementById('an-aging-excel'); if(ae) ae.onclick = () => exportRowsExcel(stageAgingRows(), 'Stage_Aging.xlsx', 'Stage Aging');
+  const ap = document.getElementById('an-aging-pdf');   if(ap) ap.onclick = () => exportRowsPDF(stageAgingRows(), 'Stage_Aging.pdf', 'Stage Aging');
+  const fe = document.getElementById('an-fin-excel'); if(fe) fe.onclick = () => exportRowsExcel(financialSummaryRows(), 'Financial_Summary.xlsx', 'Financial Summary');
+  const fp = document.getElementById('an-fin-pdf');   if(fp) fp.onclick = () => exportRowsPDF(financialSummaryRows(), 'Financial_Summary.pdf', 'Financial Summary');
 }
 
 // ---- PROGRESS DETAILS (one page, one filtered table — like IN4Suite's
@@ -2228,6 +2810,9 @@ function renderList(){
         ${(!fcfg.assignedExecutive || fcfg.assignedExecutive.filter!==false) ? `<div><label>Assigned Executive</label><select id="lf-exec">
           <option value="">All executives</option>${execs.map(e=>`<option value="${e.name}" ${listFilters.exec===e.name?'selected':''}>${e.name}</option>`).join('')}
         </select></div>` : ''}
+        ${(!fcfg.projectCode || fcfg.projectCode.filter!==false) ? `<div><label>Project</label><select id="lf-project">
+          <option value="">All projects</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${listFilters.project===p.code?'selected':''}>${p.code} — ${p.name}</option>`).join('')}
+        </select></div>` : ''}
         <div><label>Lead Date From</label><input type="date" id="lf-datefrom" value="${listFilters.dateFrom}"></div>
         <div><label>Lead Date To</label><input type="date" id="lf-dateto" value="${listFilters.dateTo}"></div>
       </div>
@@ -2278,6 +2863,7 @@ function wireListEvents(){
     if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
     if(document.getElementById('lf-cp')) listFilters.channelPartner = val('lf-cp');
     if(document.getElementById('lf-exec')) listFilters.exec = val('lf-exec');
+    if(document.getElementById('lf-project')) listFilters.project = val('lf-project');
     listFilters.dateFrom = val('lf-datefrom');
     listFilters.dateTo = val('lf-dateto');
     listPage = 1;
@@ -2359,15 +2945,27 @@ function renderMasters(){
   // the same "next" CP code just because neither can see the other's entries.
   const items = def.key==='channelPartners' ? visibleAllChannelPartners() : DB.getAllMasters(def.key);
   const allItemsForCode = def.key==='channelPartners' ? DB.getAllMasters(def.key) : items;
-  const rows = items.map(it=>`<tr>
+  // Type-and-search (currently Channel Partners only — her request was
+  // specifically to search CP details, including by mobile number, to see
+  // how many leads a CP has been given) — matched against code/name/phone,
+  // case-insensitive substring. Applied to a SEPARATE display list so the
+  // record under edit never silently disappears from `editing` just
+  // because it no longer matches whatever's currently typed in the box.
+  const isCP = def.key==='channelPartners';
+  const search = (masterSearch||'').trim().toLowerCase();
+  const displayItems = (isCP && search)
+    ? items.filter(it => [(it.code||''),(it.name||''),(it.phone||'')].some(v => String(v).toLowerCase().includes(search)))
+    : items;
+  const rows = displayItems.map(it=>`<tr>
       ${def.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
+      ${isCP ? `<td>${cpLeadCount(it.code)}</td>` : ''}
       <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
       <td class="master-actions">
         <button class="icon-btn icon-ok" data-toggle="${it.id}" title="${it.active!==false?'Deactivate':'Activate'}">${it.active!==false?'✓':'○'}</button>
         <button class="icon-btn icon-edit" data-edit="${it.id}" title="Edit">✎</button>
         <button class="icon-btn icon-del" data-delete="${it.id}" title="Delete permanently">🗑</button>
       </td>
-    </tr>`).join('') || `<tr><td colspan="${def.fields.length+2}" class="empty">No entries yet.</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="${def.fields.length+(isCP?3:2)}" class="empty">${isCP && search ? 'No Channel Partner matches that search.' : 'No entries yet.'}</td></tr>`;
 
   const editing = editingMasterId ? items.find(i=>i.id===editingMasterId) : null;
   const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
@@ -2379,12 +2977,13 @@ function renderMasters(){
         <div><label>Master Table</label><select id="master-select">
           ${MASTER_DEFS.map(m=>`<option value="${m.key}" ${m.key===def.key?'selected':''}>${m.label}</option>`).join('')}
         </select></div>
+        ${isCP ? `<div><label>Search (Name / Code / Mobile)</label><input type="text" id="master-search" value="${masterSearch||''}" placeholder="e.g. 9884022222"></div>` : ''}
       </div>
       <div class="filter-actions"><button class="btn btn-sm btn-teal" id="master-go">Go</button></div>
     </div>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr>${def.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Status</th><th>Actions</th></tr>
+        <tr>${def.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}${isCP?'<th>Leads Sourced</th>':''}<th>Status</th><th>Actions</th></tr>
         ${rows}
       </table>
     </div>
@@ -2414,16 +3013,32 @@ function renderMasters(){
 
 function wireMastersEvents(){
   const sel = document.getElementById('master-select');
-  const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; render(); };
+  // Reset the search box too whenever the master table itself changes —
+  // otherwise a search typed for Channel Partners could silently hide rows
+  // if she ever switches away and back without re-reading the label.
+  const switchMaster = () => { currentMasterKey = sel.value; editingMasterId=null; masterSearch=''; render(); };
   const goBtn = document.getElementById('master-go');
   if(goBtn) goBtn.onclick = switchMaster;
   if(sel) sel.addEventListener('change', switchMaster);
 
+  const searchEl = document.getElementById('master-search');
+  if(searchEl) searchEl.addEventListener('input', () => { masterSearch = searchEl.value; render(); });
+
   document.querySelectorAll('[data-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.edit; render(); });
-  document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleMaster(currentMasterKey, b.dataset.toggle); render(); });
+  document.querySelectorAll('[data-toggle]').forEach(b=>b.onclick = async () => {
+    const def = MASTER_DEFS.find(m=>m.key===currentMasterKey);
+    const it = DB.getAllMasters(currentMasterKey).find(x=>x.id===b.dataset.toggle);
+    const wasActive = it && it.active!==false;
+    await DB.toggleMaster(currentMasterKey, b.dataset.toggle);
+    await logAudit(wasActive?'Deactivated':'Activated', def.label.replace(/ies$/,'y').replace(/s$/,''), it ? masterItemLabel(def, it) : '');
+    render();
+  });
   document.querySelectorAll('[data-delete]').forEach(b=>b.onclick = async () => {
     if(!confirm('Delete this entry permanently? This cannot be undone.')) return;
+    const def = MASTER_DEFS.find(m=>m.key===currentMasterKey);
+    const it = DB.getAllMasters(currentMasterKey).find(x=>x.id===b.dataset.delete);
     await DB.deleteMaster(currentMasterKey, b.dataset.delete);
+    await logAudit('Deleted', def.label.replace(/ies$/,'y').replace(/s$/,''), it ? masterItemLabel(def, it) : '');
     if(editingMasterId===b.dataset.delete) editingMasterId=null;
     render();
   });
@@ -2440,8 +3055,15 @@ function wireMastersEvents(){
       fields[f] = v;
     });
     if(!ok){ alert('The first field is required.'); return; }
-    if(editingMasterId){ await DB.updateMaster(currentMasterKey, editingMasterId, fields); editingMasterId=null; }
-    else { await DB.addMaster(currentMasterKey, fields); }
+    const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
+    if(editingMasterId){
+      await DB.updateMaster(currentMasterKey, editingMasterId, fields);
+      await logAudit('Updated', singular, masterItemLabel(def, fields));
+      editingMasterId=null;
+    } else {
+      await DB.addMaster(currentMasterKey, fields);
+      await logAudit('Added', singular, masterItemLabel(def, fields));
+    }
     render();
   };
   const cancelBtn = document.getElementById('master-cancel');
@@ -2519,11 +3141,19 @@ function renderUsersView(){
 
 function wireUsersEvents(){
   document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.userEdit; render(); });
-  document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleUser(b.dataset.userToggle); render(); });
+  document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => {
+    const u = DB.getAllUsers().find(x=>x.uid===b.dataset.userToggle);
+    const wasActive = u && u.active!==false;
+    await DB.toggleUser(b.dataset.userToggle);
+    await logAudit(wasActive?'Deactivated':'Activated', 'User', u ? u.name : '');
+    render();
+  });
   document.querySelectorAll('[data-user-delete]').forEach(b=>b.onclick = async () => {
     const extra = DB.isLive() ? ' Their sign-in account itself must be removed separately in the Firebase Console if you want it fully deleted.' : '';
     if(!confirm('Remove this user\'s access record?' + extra + ' This cannot be undone.')) return;
+    const u = DB.getAllUsers().find(x=>x.uid===b.dataset.userDelete);
     await DB.deleteUser(b.dataset.userDelete);
+    await logAudit('Deleted', 'User', u ? u.name : '');
     if(editingMasterId===b.dataset.userDelete) editingMasterId=null;
     render();
   });
@@ -2552,6 +3182,7 @@ function wireUsersEvents(){
       if(newPassword && newPassword.length < 6){ alert('New password must be at least 6 characters, or leave it blank to keep the current one.'); return; }
       try{
         await DB.updateUser(editingMasterId, { name, phone, role, reportsTo });
+        await logAudit('Updated', 'User', name, newPassword ? 'Profile updated; password also changed.' : 'Profile updated.');
         if(newPassword) await DB.changeUserPassword(editingMasterId, newPassword);
       }catch(err){
         alert('Saved the profile, but could not change the password: ' + ((err && err.message) || err));
@@ -2566,6 +3197,7 @@ function wireUsersEvents(){
       if(!password || password.length < 6){ alert('Password must be at least 6 characters.'); return; }
       try{
         await DB.createUser({ name, email, phone, role, password, reportsTo });
+        await logAudit('Added', 'User', name, 'Role: ' + (ROLE_LABELS[role]||role));
       }catch(err){
         alert('Could not create user: ' + friendlyAuthError(err));
         return;
@@ -3005,6 +3637,7 @@ function wireWorkflowEvents(){
       from: w.from, to: w.to, label: w.label, role: document.getElementById('wf-role-'+i).value,
     }));
     await DB.saveWorkflow(rows);
+    await logAudit('Saved', 'Workflow Config', '', rows.length + ' mapping(s) saved.');
     workflowDraftRows = null;
     refreshWorkflowFromDB();
     render();
@@ -3098,6 +3731,7 @@ function wireStatusConfigEvents(){
       sla: document.getElementById('stg-sla-'+i).value === '' ? null : parseInt(document.getElementById('stg-sla-'+i).value,10),
     }));
     await DB.saveStages(rows);
+    await logAudit('Saved', 'Status Config', '', rows.length + ' stage(s) saved.');
     statusDraftRows = null;
     refreshStagesFromDB();
     refreshWorkflowFromDB(); // drop any gates whose pair no longer exists
@@ -3221,6 +3855,7 @@ function wirePageAccessEvents(){
   if(saveBtn) saveBtn.onclick = async () => {
     const rows = pageAccessDraft().map(r=>({ view:r.view, roles:r.roles.slice() }));
     await DB.savePageAccess(rows);
+    await logAudit('Saved', 'Page Access', '', 'Role-level page access grid saved.');
     pageAccessDraftRows = null;
     refreshViewAccessFromDB();
     applyRoleVisibility();
@@ -3255,6 +3890,7 @@ function wirePageAccessEvents(){
       .map(r => ({ uid: uidSel, view: r.view, allowed: r.allowed }));
     const existing = (DB.getUserPageAccess()||[]).filter(r=>r.uid!==uidSel);
     await DB.saveUserPageAccess(existing.concat(diffRows));
+    await logAudit('Saved', 'Page Access', 'Per-user override: ' + user.name, diffRows.length + ' page(s) overridden.');
     userOverrideDraftRows = null;
     refreshUserPageOverridesFromDB();
     applyRoleVisibility();
@@ -3268,11 +3904,86 @@ function wirePageAccessEvents(){
     if(!confirm(`Clear all page-access overrides for ${user ? user.name : 'this user'}? They will go back to their role's default access.`)) return;
     const existing = (DB.getUserPageAccess()||[]).filter(r=>r.uid!==uidSel);
     await DB.saveUserPageAccess(existing);
+    await logAudit('Updated', 'Page Access', 'Per-user override: ' + (user ? user.name : ''), 'Overrides cleared — back to role default.');
     userOverrideDraftRows = null;
     refreshUserPageOverridesFromDB();
     applyRoleVisibility();
     render();
   };
+}
+
+// ---- AUDIT TRAIL ------------------------------------------------------------
+// Read-only — nothing here is ever edited or deleted, same append-only
+// discipline as every other log in this file. Shows the most recent 500
+// config-change entries (DB.getAuditLog() already caps it there), newest
+// first, with a filter panel (Entity Type / Actor / Date range) and the
+// same generic Excel/PDF export the Reports page uses.
+// Shared by the on-screen table AND the Excel/PDF export, so an export
+// taken while filters are active matches exactly what's on screen — unlike
+// the Reports page's exports (which have no filters of their own to match).
+function filteredAuditLog(){
+  const log = (DB.getAuditLog()||[]).slice().reverse(); // newest first
+  const f = auditTrailFilters;
+  return log.filter(e=>{
+    if(f.entityType && e.entityType!==f.entityType) return false;
+    if(f.actor && e.actor!==f.actor) return false;
+    if(f.dateFrom){ const d=(e.at||'').toString().slice(0,10); if(!d || d<f.dateFrom) return false; }
+    if(f.dateTo){ const d=(e.at||'').toString().slice(0,10); if(!d || d>f.dateTo) return false; }
+    return true;
+  });
+}
+function auditTrailReportRows(){
+  return filteredAuditLog().map(e=>({
+    'Date/Time': fmtDate(e.at), Actor: e.actor||'', Role: e.actorRole||'',
+    Action: e.action||'', 'Entity Type': e.entityType||'', Entity: e.entityLabel||'', Notes: e.notes||'',
+  }));
+}
+function renderAuditTrailView(){
+  const log = (DB.getAuditLog()||[]);
+  const entityTypes = [...new Set(log.map(e=>e.entityType).filter(Boolean))].sort();
+  const actors = [...new Set(log.map(e=>e.actor).filter(Boolean))].sort();
+  const f = auditTrailFilters;
+  const filtered = filteredAuditLog();
+  const rows = filtered.map(e=>`<tr>
+      <td>${fmtDate(e.at)}</td><td>${e.actor||'—'}</td><td>${e.actorRole||'—'}</td>
+      <td><span class="badge badge-navy">${e.action||'—'}</span></td><td>${e.entityType||'—'}</td>
+      <td>${e.entityLabel||'—'}</td><td>${e.notes||''}</td>
+    </tr>`).join('') || `<tr><td colspan="7" class="empty">${log.length ? 'No audit entries match these filters.' : 'No configuration changes recorded yet.'}</td></tr>`;
+  return `
+    <div class="page-header"><h1>Audit Trail</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Who changed the SYSTEM — Masters, Manage Users, Workflow Config, Status Config, Page Access, and Lead Field Configuration. Each lead already keeps its own detailed history on its own tabs (Negotiation, Approvals, Payments, etc.) — this page doesn't duplicate that, it's for configuration changes only. Showing the most recent ${log.length} entr${log.length===1?'y':'ies'}.</p>
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Entity Type</label><select id="at-type"><option value="">All types</option>${entityTypes.map(t=>`<option value="${t}" ${f.entityType===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div><label>Actor</label><select id="at-actor"><option value="">All users</option>${actors.map(a=>`<option value="${a}" ${f.actor===a?'selected':''}>${a}</option>`).join('')}</select></div>
+        <div><label>Date From</label><input type="date" id="at-datefrom" value="${f.dateFrom}"></div>
+        <div><label>Date To</label><input type="date" id="at-dateto" value="${f.dateTo}"></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-sm btn-ghost" id="at-clear">Clear Filters</button>
+        <button class="btn btn-sm btn-teal" id="at-go">Go</button>
+      </div>
+    </div>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px;">
+        <button class="btn btn-sm btn-ghost" id="at-excel">⬇ Export Excel</button>
+        <button class="btn btn-sm btn-ghost" id="at-pdf">⬇ Export PDF</button>
+      </div>
+      <table><tr><th>Date/Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Entity Type</th><th>Entity</th><th>Notes</th></tr>${rows}</table>
+    </div>
+  `;
+}
+function wireAuditTrailEvents(){
+  const val = id => (document.getElementById(id)?.value || '').trim();
+  const goBtn = document.getElementById('at-go');
+  if(goBtn) goBtn.onclick = () => {
+    auditTrailFilters = { entityType: val('at-type'), actor: val('at-actor'), dateFrom: val('at-datefrom'), dateTo: val('at-dateto') };
+    render();
+  };
+  const clearBtn = document.getElementById('at-clear');
+  if(clearBtn) clearBtn.onclick = () => { auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' }; render(); };
+  const xe = document.getElementById('at-excel'); if(xe) xe.onclick = () => exportRowsExcel(auditTrailReportRows(), 'Audit_Trail.xlsx', 'Audit Trail');
+  const xp = document.getElementById('at-pdf');   if(xp) xp.onclick = () => exportRowsPDF(auditTrailReportRows(), 'Audit_Trail.pdf', 'Audit Trail');
 }
 
 // ---- CONFIGURE (Lead Field Configuration) ---------------------------------
@@ -3304,7 +4015,11 @@ function wireConfigureEvents(){
     rows[i][col] = cb.checked;
   }));
   const saveBtn = document.getElementById('cfg-save');
-  if(saveBtn) saveBtn.onclick = async () => { await DB.saveFieldConfig(rows); render(); alert('Field configuration saved.'); };
+  if(saveBtn) saveBtn.onclick = async () => {
+    await DB.saveFieldConfig(rows);
+    await logAudit('Saved', 'Lead Field Configuration', '', rows.length + ' field(s) saved.');
+    render(); alert('Field configuration saved.');
+  };
 }
 
 // ---- MODALS: New Lead ---------------------------------------------------
@@ -3315,18 +4030,20 @@ function renderNewLeadView(){
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
   const execs = visibleExecutives();
+  const projects = DB.getMasters('projects');
 
   return `
     <div class="page-header"><h1>New Land Lead</h1></div>
     <div class="card">
       <div class="form-grid">
+        <div class="full" data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
         <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
         <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div data-field="projectCode"><label>Project</label><select id="nl-project"><option value="">— none —</option>${projects.map(p=>`<option value="${p.code}">${p.code} — ${p.name}</option>`).join('')}</select></div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
         <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
-        <div class="full" data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
         <div data-field="googlePin"><label>Google Pin / Coordinates</label><input type="text" id="nl-pin" placeholder="lat, long"></div>
         <div data-field="landClassification"><label>Land Classification</label><select id="nl-class">${classes.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
         <div data-field="extent">
@@ -3402,8 +4119,13 @@ function wireNewLeadViewEvents(){
         if(el && !el.value.trim()){ alert((cfg.label||key) + ' is required.'); return; }
       }
     }
+    // Village is no longer hardcoded-required here — it now goes through
+    // the same Configure-driven Mandatory loop as every other field above
+    // (see DEFAULT_FIELD_CONFIG's own comment on why it was loosened to
+    // optional by default: it depends on a pre-registered Villages master
+    // entry existing, which isn't always true when a lead needs logging
+    // quickly, unlike Site Location which is free text).
     const village = document.getElementById('nl-village').value.trim();
-    if(!village && fcfg.village?.visible!==false){ alert('Village is required.'); return; }
     const exec = document.getElementById('nl-exec').value.trim() || 'Unassigned';
     const lead = {
       leadId: uid('LL-2026'),
@@ -3411,6 +4133,7 @@ function wireNewLeadViewEvents(){
       leadSourceDateTime: document.getElementById('nl-datetime').value,
       leadSource: document.getElementById('nl-source').value,
       channelPartnerCode: document.getElementById('nl-cp').value.trim(),
+      projectCode: document.getElementById('nl-project').value.trim(),
       village, siteLocation: document.getElementById('nl-loc').value.trim(),
       surveyNumber: document.getElementById('nl-survey').value.trim(),
       googlePin: document.getElementById('nl-pin').value.trim(),
@@ -3432,7 +4155,8 @@ function wireNewLeadViewEvents(){
       onHold:{active:false, reasonCode:'', notes:'', since:''},
       contactSubStatus:{ mediator:{contacted:false,date:''}, landowner:{contacted:false,date:''} },
       feasibility:{ technical:{status:'Not Started',notes:''}, financial:{status:'Not Started',notes:''} },
-      documents:[], negotiationLog:[], approval:{approver:'',date:'',remarks:''},
+      documents:[], negotiationLog:[], legalVerificationLog:[], valuationLog:[], acquisitionProposalLog:[], approval:{approver:'',date:'',remarks:''},
+      paymentLog:[], registrationLog:[],
       finalPrice:null, finalDate:'', outcome:'',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:exec, note:'Lead created'}],
       reassignmentHistory:[],
@@ -3479,8 +4203,18 @@ function renderDetailModal(id){
           ${renderFeasibilityTab(l)}
           <h2 class="section-title">Documents</h2>
           ${renderDocumentsTab(l)}
+          <h2 class="section-title">Legal Verification</h2>
+          ${renderLegalVerificationTab(l)}
           <h2 class="section-title">Negotiation</h2>
           ${renderNegotiationTab(l)}
+          <h2 class="section-title">Valuation</h2>
+          ${renderValuationTab(l)}
+          <h2 class="section-title">Acquisition Proposal</h2>
+          ${renderAcquisitionProposalTab(l)}
+          <h2 class="section-title">Payments</h2>
+          ${renderPaymentsTab(l)}
+          <h2 class="section-title">Registration</h2>
+          ${renderRegistrationTab(l)}
           <h2 class="section-title">History</h2>
           ${renderHistoryTab(l)}
         </div>
@@ -3550,6 +4284,7 @@ function renderOverviewTab(l){
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div><label>Project</label><select id="ov-e-project"><option value="" ${!l.projectCode?'selected':''}>— none —</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${p.code===l.projectCode?'selected':''}>${p.code} — ${p.name}</option>`).join('')}</select></div>
         <div><label>Assigned Executive</label><input type="text" value="${l.assignedExecutive||'—'}" disabled title="Assigned Executive isn't changed from this form."></div>
         <div><label>Village Name</label><select id="ov-e-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}" ${v.name===l.village?'selected':''}>${v.name}</option>`).join('')}</select></div>
         <div><label>Site Location</label><input type="text" id="ov-e-loc" value="${l.siteLocation||''}"></div>
@@ -3583,6 +4318,7 @@ function renderOverviewTab(l){
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
+      <div><label>Project</label><div>${projectLabel(l.projectCode)}</div></div>
       <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
       <div><label>Site Location</label><div>${l.siteLocation||'—'}</div></div>
@@ -3662,8 +4398,9 @@ function renderStageTab(l){
   const holdReasons = DB.getMasters('holdReasons');
   const dropReasons = DB.getMasters('dropReasons');
 
-  // "Reassign Executive" — only ever offered on a Frozen (On Hold) lead,
-  // and only to whoever canReassignLead() allows (Manager/Head within
+  // "Reassign Executive" — available on ANY lead (widened from the
+  // original Frozen-On-Hold-only scope, see canReassignLead()'s own
+  // comment), to whoever canReassignLead() allows (Manager/Head within
   // their own team, Admin always; never an Executive). The dropdown is
   // pre-scoped to eligibleReassignmentTargets(), but DB.reassignLead()
   // re-validates everything itself too — the dropdown's filtering is a
@@ -3676,7 +4413,7 @@ function renderStageTab(l){
     <button class="btn btn-sm btn-ghost" id="reassign-open-btn" style="margin-left:8px;">Reassign Executive</button>
     ${reassignMode ? `
       <div class="card" style="margin-top:10px;padding:12px;">
-        <h4 style="margin:0 0 8px;">Reassign Executive — Frozen Lead</h4>
+        <h4 style="margin:0 0 8px;">Reassign / Assign Executive</h4>
         <div class="form-grid">
           <div><label>Lead</label><div>${l.leadId}</div></div>
           <div><label>Current Executive</label><div>${l.assignedExecutive||'—'}</div></div>
@@ -3702,7 +4439,6 @@ function renderStageTab(l){
       ${l.onHold && l.onHold.active ? `
         <p style="font-size:13px;">Currently on hold since ${fmtDate(l.onHold.since)} — <b>${l.onHold.reasonCode}</b>${l.onHold.notes?': '+l.onHold.notes:''}</p>
         <button class="btn btn-sm btn-teal" id="resume-btn">Resume (clear hold)</button>
-        ${reassignBlock}
       ` : `
         <div class="form-grid">
           <div><label>Reason</label><select id="hold-reason">${holdReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
@@ -3711,6 +4447,11 @@ function renderStageTab(l){
         <button class="btn btn-sm btn-ghost" id="hold-btn" style="margin-top:8px;">Put On Hold</button>
       `}
     </fieldset>`;
+  // Assignment (spec, later request) — its own fieldset now, independent
+  // of On Hold status (was nested inside the "currently on hold" branch
+  // above, back when this was Frozen-lead-only — see canReassignLead()'s
+  // comment). Shown whenever canReassignLead() allows it, on any lead.
+  const assignBlock = !canReassign ? '' : `<fieldset><legend>Executive Assignment</legend>${reassignBlock}</fieldset>`;
 
   const extraTargets = extraTransitionTargets(l, next, prev);
   const extraBlock = extraTargets.map((t,i)=>renderTransitionBlock(l.stage, t, 'extra-'+i, l)).join('');
@@ -3732,7 +4473,7 @@ function renderStageTab(l){
         : `<p style="font-size:13px;">Dropped — <b>${l.reasonCode||'—'}</b>${l.reasonNotes?': '+l.reasonNotes:''}</p>`}
     </fieldset>` : '';
 
-  return `${gateBlock}${holdBlock}${dropBlock}${closedSummary}`;
+  return `${gateBlock}${holdBlock}${assignBlock}${dropBlock}${closedSummary}`;
 }
 
 function renderFeasibilityTab(l){
@@ -3747,9 +4488,48 @@ function renderFeasibilityTab(l){
     `<button class="btn btn-sm btn-teal" id="save-feas">Save Feasibility</button>`;
 }
 
+// Per spec Module 7: a category (from the new, admin-configurable Document
+// Categories master), a reference number, issue/expiry dates, and a
+// verification workflow (Pending/Verified/Rejected/Deficient — never
+// inferred just because a file was uploaded; see canVerifyDocument()) on
+// top of the existing name/url/upload mechanics, which are unchanged.
+// Older entries (recorded before this round) simply show "—"/"Pending" for
+// whichever of these fields they don't have.
 function renderDocumentsTab(l){
-  const rows = (l.documents||[]).map(d=>`<div class="doc-row"><span>${d.name} ${d.url && /^https?:/.test(d.url) ? `<a href="${d.url}" target="_blank" rel="noopener">(view)</a>` : `<span style="color:var(--muted)">— ${d.url}</span>`}</span><span style="color:var(--muted)">${fmtDate(d.addedAt)}</span></div>`).join('') || '<div class="empty">No documents recorded yet.</div>';
+  const docs = (l.documents||[]);
+  const today = new Date();
+  const rows = docs.map((d,i)=>{
+    const expiry = d.expiryDate ? new Date(d.expiryDate) : null;
+    const daysToExpiry = expiry ? daysBetween(today, expiry) : null;
+    const expiryBadge = expiry
+      ? (daysToExpiry < 0 ? '<span class="badge badge-warn">Expired</span>' : (daysToExpiry <= 30 ? '<span class="badge badge-warn">Expiring soon</span>' : ''))
+      : '';
+    const verStatus = d.verificationStatus || 'Pending';
+    const verBadgeClass = verStatus==='Verified' ? 'badge-ok' : (verStatus==='Rejected' ? 'badge-warn' : 'badge-muted');
+    return `<div class="doc-row" style="flex-wrap:wrap;gap:4px 10px;">
+      <span><b>${d.name}</b> ${d.url && /^https?:/.test(d.url) ? `<a href="${d.url}" target="_blank" rel="noopener">(view)</a>` : (d.url?`<span style="color:var(--muted)">— ${d.url}</span>`:'')}</span>
+      <span style="color:var(--muted)">${d.category||'Uncategorized'}${d.referenceNumber?(' · Ref '+d.referenceNumber):''}</span>
+      <span style="color:var(--muted)">Uploaded ${fmtDate(d.addedAt)}${d.uploadedBy?(' by '+d.uploadedBy):''}</span>
+      ${expiry?`<span style="color:var(--muted)">Expires ${fmtDate(d.expiryDate)} ${expiryBadge}</span>`:''}
+      <span><span class="badge ${verBadgeClass}">${verStatus}</span>${d.verifiedBy?(' <span style="color:var(--muted)">by '+d.verifiedBy+'</span>'):''}</span>
+      ${canVerifyDocument() && verStatus==='Pending' ? `
+        <span>
+          <button class="btn btn-sm btn-ghost" data-doc-verify="${i}" data-doc-status="Verified">Verify</button>
+          <button class="btn btn-sm btn-ghost" data-doc-verify="${i}" data-doc-status="Rejected">Reject</button>
+          <button class="btn btn-sm btn-ghost" data-doc-verify="${i}" data-doc-status="Deficient">Mark Deficient</button>
+        </span>` : ''}
+    </div>`;
+  }).join('') || '<div class="empty">No documents recorded yet.</div>';
   const liveUpload = DB.isLive() && DB.hasStorage && DB.hasStorage();
+  const categories = DB.getMasters('docCategories');
+  const metaFields = `
+    <div class="form-grid" style="margin-top:8px;">
+      <div><label>Category</label><select id="doc-category">${categories.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
+      <div><label>Reference Number</label><input type="text" id="doc-refnum"></div>
+      <div><label>Issue Date</label><input type="date" id="doc-issue"></div>
+      <div><label>Expiry Date</label><input type="date" id="doc-expiry"></div>
+      <div class="full"><label>Remarks</label><input type="text" id="doc-remarks"></div>
+    </div>`;
   return `
     ${rows}
     ${liveUpload ? `
@@ -3758,6 +4538,7 @@ function renderDocumentsTab(l){
         <input type="file" id="doc-file">
         <button class="btn btn-sm btn-teal" id="doc-add">Upload</button>
       </div>
+      ${metaFields}
       <div id="doc-upload-status" style="font-size:11.5px;color:var(--muted);margin-top:6px;"></div>
     ` : `
       <div class="inline-add">
@@ -3765,22 +4546,319 @@ function renderDocumentsTab(l){
         <input type="text" id="doc-url" placeholder="Reference / URL">
         <button class="btn btn-sm btn-teal" id="doc-add">Add</button>
       </div>
+      ${metaFields}
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">${DB.isLive() ? 'Enable Firebase Storage on your project to turn this into real file uploads.' : 'Connect this app to Firebase (see FIREBASE_CONFIG near the top of this file) to enable real file uploads here.'}</p>
     `}
   `;
 }
 
-function renderNegotiationTab(l){
-  const rows = (l.negotiationLog||[]).map(n=>`<tr><td>${fmtDate(n.date)}</td><td>${n.offerBy}</td><td>${fmtNum(n.amount)}</td><td>${n.notes||''}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">No negotiation entries yet.</td></tr>';
+// Legal Verification (spec Module 8) — reads as a structured checklist on
+// top of whatever's been uploaded in the Documents tab above (EC, Patta,
+// any Legal Opinion document), but is its own append-only history, same
+// discipline as Negotiation: a later finding is a NEW entry, not an edit of
+// an earlier one, so "what did we believe on date X" is never lost. Adding
+// an entry is gated to Manager/Head/Admin (canRecordLegalOrValuation()) —
+// an Executive can see the full history but not record a finding.
+function renderLegalVerificationTab(l){
+  const log = (l.legalVerificationLog||[]);
+  const summary = legalVerificationSummary(l);
+  const riskBadgeClass = r => r==='High' ? 'badge-warn' : (r==='Medium' ? 'badge-navy' : 'badge-ok');
+  const summaryBlock = summary ? `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Title Status</label><div>${summary.latest.titleStatus||'—'}</div></div>
+      <div><label>Encumbrance Status</label><div>${summary.latest.encumbranceStatus||'—'}${summary.latest.encumbrancePeriod?(' <span style="color:var(--muted)">('+summary.latest.encumbrancePeriod+')</span>'):''}</div></div>
+      <div><label>Litigation Status</label><div>${summary.latest.litigationStatus||'—'}</div></div>
+      <div><label>Patta/Chitta Verified</label><div>${summary.latest.pattaChittaVerified||'—'}</div></div>
+      <div><label>Legal Risk Rating</label><div><span class="badge ${riskBadgeClass(summary.latest.legalRiskRating)}">${summary.latest.legalRiskRating||'—'}</span></div></div>
+      <div><label>Last Verified</label><div>${fmtDate(summary.latest.date)} <span style="color:var(--muted)">by ${summary.latest.verifiedBy||'—'}</span></div></div>
+    </div>` : '<p class="empty">No legal verification recorded yet.</p>';
+  const rows = log.slice().reverse().map(n=>`<tr>
+      <td>${fmtDate(n.date)}</td><td>${n.titleStatus||'—'}</td><td>${n.encumbranceStatus||'—'}</td>
+      <td>${n.litigationStatus||'—'}${n.litigationDetails?(' — '+n.litigationDetails):''}</td>
+      <td>${n.pattaChittaVerified||'—'}</td>
+      <td><span class="badge ${riskBadgeClass(n.legalRiskRating)}">${n.legalRiskRating||'—'}</span></td>
+      <td>${n.verifiedBy||'—'}</td><td>${n.remarks||''}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">No legal verification entries yet.</td></tr>';
+  const canAdd = canRecordLegalOrValuation();
   return `
-    <table style="margin-bottom:10px;"><tr><th>Date</th><th>By</th><th>Amount</th><th>Notes</th></tr>${rows}</table>
-    <div class="inline-add">
-      <input type="date" id="neg-date" value="${todayStr()}">
-      <select id="neg-by"><option>Us</option><option>Owner</option><option>Mediator</option></select>
-      <input type="number" id="neg-amount" step="0.01" placeholder="Amount">
-      <input type="text" id="neg-notes" placeholder="Notes">
-      <button class="btn btn-sm btn-teal" id="neg-add">Add</button>
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Date</th><th>Title</th><th>Encumbrance</th><th>Litigation</th><th>Patta/Chitta</th><th>Risk</th><th>Verified By</th><th>Remarks</th></tr>${rows}</table>
     </div>
+    ${canAdd ? `
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="legal-date" value="${todayStr()}"></div>
+      <div><label>Title Status</label><select id="legal-title">${LEGAL_TITLE_STATUSES.map(s=>`<option ${s==='Not Started'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div><label>Encumbrance Status</label><select id="legal-enc">${ENCUMBRANCE_STATUSES.map(s=>`<option ${s==='Not Checked'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div><label>Encumbrance Period Checked</label><input type="text" id="legal-enc-period" placeholder="e.g. 2000–2026"></div>
+      <div><label>Litigation Status</label><select id="legal-litigation">${LITIGATION_STATUSES.map(s=>`<option ${s==='None'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div><label>Litigation Details</label><input type="text" id="legal-litigation-details"></div>
+      <div><label>Patta/Chitta Verified</label><select id="legal-patta">${YES_NO_PARTIAL.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div><label>Legal Risk Rating</label><select id="legal-risk">${LEGAL_RISK_RATINGS.map(s=>`<option ${s==='Low'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="full"><label>Remarks</label><input type="text" id="legal-remarks"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="legal-add">Record Legal Verification</button></div>
+    ` : ''}
+  `;
+}
+
+// Each round is its own appended record — see negotiationLog's own comment
+// above negotiationSummary() — so earlier rounds' figures are shown exactly
+// as recorded, never retouched by a later one. New optional fields
+// (negotiatedWith/pricePerAcre/pricePerCent/otherCharges/brokerCommission/
+// paymentTerms/status) are additive: older entries (seed data, or anything
+// recorded before this round) simply show "—" for whichever of these they
+// don't have, so nothing already saved needs migrating.
+function renderNegotiationTab(l){
+  const log = (l.negotiationLog||[]);
+  const summary = negotiationSummary(l);
+  const summaryBlock = summary ? `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Initial Asking Price</label><div>${summary.initialAsk!=null?fmtNum(summary.initialAsk):'—'}</div></div>
+      <div><label>Lowest Recorded Offer</label><div>${summary.lowestOffer!=null?fmtNum(summary.lowestOffer):'—'}</div></div>
+      <div><label>Latest Entry</label><div>${fmtNum(summary.latest.amount)} <span style="color:var(--muted)">(${fmtDate(summary.latest.date)})</span></div></div>
+      <div><label>Current Proposed Value</label><div>${summary.currentProposed!=null?fmtNum(summary.currentProposed):'—'}</div></div>
+      <div><label>Change from Initial Ask</label><div>${summary.changeFromAsk!=null?fmtNum(summary.changeFromAsk):'—'}</div></div>
+      <div><label>Negotiation Duration</label><div>${summary.durationDays} day(s)</div></div>
+    </div>` : '';
+  const rows = log.map(n=>`<tr>
+      <td>${fmtDate(n.date)}</td><td>${n.offerBy}</td><td>${n.negotiatedWith||'—'}</td><td>${fmtNum(n.amount)}</td>
+      <td>${n.pricePerAcre!=null?fmtNum(n.pricePerAcre):'—'}</td><td>${n.pricePerCent!=null?fmtNum(n.pricePerCent):'—'}</td>
+      <td>${n.brokerCommission!=null?fmtNum(n.brokerCommission):'—'}</td>
+      <td>${n.status?`<span class="badge badge-navy">${n.status}</span>`:'—'}</td>
+      <td>${n.notes||''}</td>
+    </tr>`).join('') || '<tr><td colspan="9" class="empty">No negotiation entries yet.</td></tr>';
+  return `
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Date</th><th>By</th><th>Negotiated With</th><th>Amount</th><th>₹/Acre</th><th>₹/Cent</th><th>Broker Commission</th><th>Status</th><th>Notes</th></tr>${rows}</table>
+    </div>
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="neg-date" value="${todayStr()}"></div>
+      <div><label>By</label><select id="neg-by"><option>Us</option><option>Owner</option><option>Mediator</option></select></div>
+      <div><label>Negotiated With</label><input type="text" id="neg-with" placeholder="Name of the person this round was with"></div>
+      <div><label>Amount</label><input type="number" id="neg-amount" step="0.01" placeholder="Amount"></div>
+      <div><label>Price / Acre</label><input type="number" id="neg-ppa" step="0.01"></div>
+      <div><label>Price / Cent</label><input type="number" id="neg-ppc" step="0.01"></div>
+      <div><label>Other Commercial Charges</label><input type="number" id="neg-other" step="0.01"></div>
+      <div><label>Broker Commission</label><input type="number" id="neg-commission" step="0.01"></div>
+      <div><label>Proposed Payment Terms</label><input type="text" id="neg-terms"></div>
+      <div><label>Negotiation Status</label><select id="neg-status">${NEGOTIATION_STATUSES.map(s=>`<option value="${s}" ${s==='Ongoing'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div class="full"><label>Notes</label><input type="text" id="neg-notes" placeholder="Notes"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="neg-add">Add Negotiation Round</button></div>
+  `;
+}
+
+// Valuation (spec Module 9) — same append-only history as Legal
+// Verification/Negotiation above. "Current Negotiated Value" and the
+// variance figure are pulled live from valuationSummary() (which itself
+// reads negotiationSummary()), never re-entered here, so this tab can never
+// show a negotiated figure that disagrees with the Negotiation tab's own.
+// Adding an entry is gated the same way as Legal Verification
+// (canRecordLegalOrValuation()).
+function renderValuationTab(l){
+  const log = (l.valuationLog||[]);
+  const summary = valuationSummary(l);
+  const summaryBlock = summary ? `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Latest Guideline Rate</label><div>${fmtNum(summary.latest.guidelineRate)}</div></div>
+      <div><label>Latest Market Rate</label><div>${summary.latest.marketRate!=null?fmtNum(summary.latest.marketRate):'—'}</div></div>
+      <div><label>Latest Total Valuation</label><div>${summary.latest.totalValuation!=null?fmtNum(summary.latest.totalValuation):'—'}</div></div>
+      <div><label>Current Negotiated Value</label><div>${summary.negotiated!=null?fmtNum(summary.negotiated):'—'} <span style="color:var(--muted)">(from Negotiation tab)</span></div></div>
+      <div><label>Variance vs Guideline</label><div style="${summary.variancePct!=null && summary.variancePct>0?'color:var(--danger,#c0392b);':''}">${summary.variancePct!=null?(summary.variancePct.toFixed(1)+'%'):'—'}</div></div>
+      <div><label>Valuation Method</label><div>${summary.latest.method||'—'}</div></div>
+    </div>` : '<p class="empty">No valuation recorded yet.</p>';
+  const rows = log.slice().reverse().map(n=>`<tr>
+      <td>${fmtDate(n.date)}</td><td>${n.method||'—'}</td>
+      <td>${fmtNum(n.guidelineRate)}</td><td>${n.marketRate!=null?fmtNum(n.marketRate):'—'}</td>
+      <td>${n.agreedRate!=null?fmtNum(n.agreedRate):'—'}</td>
+      <td>${n.totalValuation!=null?fmtNum(n.totalValuation):'—'}</td>
+      <td>${n.valuedBy||'—'}</td><td>${n.remarks||''}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">No valuation entries yet.</td></tr>';
+  const canAdd = canRecordLegalOrValuation();
+  return `
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Date</th><th>Method</th><th>Guideline Rate</th><th>Market Rate</th><th>Agreed Rate</th><th>Total Valuation</th><th>Valued By</th><th>Remarks</th></tr>${rows}</table>
+    </div>
+    ${canAdd ? `
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="val-date" value="${todayStr()}"></div>
+      <div><label>Valuation Method</label><select id="val-method">${VALUATION_METHODS.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div><label>Guideline Rate</label><input type="number" id="val-guideline" step="0.01" placeholder="Govt. guideline rate"></div>
+      <div><label>Market Rate</label><input type="number" id="val-market" step="0.01" placeholder="Comparable market rate"></div>
+      <div><label>Agreed/Negotiated Rate</label><input type="number" id="val-agreed" step="0.01"></div>
+      <div><label>Total Valuation Amount</label><input type="number" id="val-total" step="0.01"></div>
+      <div class="full"><label>Remarks</label><input type="text" id="val-remarks"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="val-add">Record Valuation</button></div>
+    ` : ''}
+  `;
+}
+
+// Acquisition Proposals (spec Module 10) — the formal, versioned ask built
+// from everything above (Negotiation's current figure, Valuation's
+// recommendation, Legal Verification's status), submitted for sign-off.
+// This log is distinct from the single stage-gate `approval` field a lead
+// already has (see this file's PROPOSAL_STATUSES comment) — that gate
+// controls moving the lead's STAGE; this is the actual proposal document.
+// Adding a new draft/revision is NOT role-gated the same way Legal/
+// Valuation are — any role that can open this lead can draft or revise a
+// proposal, same as Negotiation, since drafting the ask is normally the
+// Executive's own job; a later Approvals module is where sign-off rights
+// (and "no self-approval") actually get enforced.
+// A proposal's figure is captured differently per mode — Outright carries
+// a Price (proposedPurchasePrice), Joint Venture carries an Advance paid
+// to the landowner (advanceAmount) instead, never both. amountLabel/
+// amountValue read whichever one actually applies to a given entry, so
+// older entries recorded before this split (seed data, or a version saved
+// under the old generic mode list) still display sensibly.
+function proposalAmountLabel(n){ return n.modeOfAcquisition==='Joint Venture' ? 'Advance' : 'Price'; }
+function proposalAmountValue(n){ return n.modeOfAcquisition==='Joint Venture' ? n.advanceAmount : n.proposedPurchasePrice; }
+function renderAcquisitionProposalTab(l){
+  const log = (l.acquisitionProposalLog||[]);
+  const summary = proposalSummary(l);
+  const statusBadgeClass = s => s==='Approved' ? 'badge-ok' : (s==='Rejected' ? 'badge-warn' : (s==='Draft' ? 'badge-muted' : 'badge-navy'));
+  const summaryBlock = summary ? `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Current Status</label><div><span class="badge ${statusBadgeClass(summary.latest.status)}">${summary.latest.status}</span></div></div>
+      <div><label>${proposalAmountLabel(summary.latest)}</label><div>${fmtNum(proposalAmountValue(summary.latest))}</div></div>
+      <div><label>Mode of Acquisition</label><div>${summary.latest.modeOfAcquisition||'—'}</div></div>
+      <div><label>Version</label><div>v${summary.version}</div></div>
+      <div><label>Last Updated</label><div>${fmtDate(summary.latest.date)} <span style="color:var(--muted)">by ${summary.latest.proposedBy||'—'}</span></div></div>
+      <div><label>Payment Schedule</label><div>${summary.latest.paymentSchedule||'—'}</div></div>
+    </div>` : '<p class="empty">No acquisition proposal recorded yet.</p>';
+  const rows = log.slice().reverse().map((n,ri)=>`<tr>
+      <td>v${log.length-ri}</td><td>${fmtDate(n.date)}</td>
+      <td><span class="badge ${statusBadgeClass(n.status)}">${n.status}</span></td>
+      <td>${proposalAmountLabel(n)}: ${fmtNum(proposalAmountValue(n))}</td><td>${n.modeOfAcquisition||'—'}</td>
+      <td>${n.proposedBy||'—'}</td><td>${n.remarks||''}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No proposal versions yet.</td></tr>';
+  // Approvals (spec Module 11) — only offered while the LATEST version is
+  // still awaiting a decision ('Submitted'/'Under Review'); once it's
+  // Approved/Rejected the only way forward is a brand new version (via the
+  // form below), same as every other append-only log in this app.
+  const pending = summary && (summary.latest.status==='Submitted' || summary.latest.status==='Under Review');
+  let approvalBlock = '';
+  if(pending){
+    if(canApproveProposal(summary.latest)){
+      approvalBlock = `
+        <fieldset style="margin-bottom:12px;">
+          <legend>Approval Decision — v${summary.version} (${summary.latest.status})</legend>
+          <div class="form-grid">
+            <div class="full"><label>Decision Remarks</label><input type="text" id="appr-remarks" placeholder="Reason for this decision"></div>
+          </div>
+          <div style="margin-top:8px;">
+            <button class="btn btn-sm btn-teal" id="appr-approve">Approve Proposal</button>
+            <button class="btn btn-sm btn-ghost" id="appr-reject">Reject Proposal</button>
+          </div>
+        </fieldset>`;
+    } else if(canRecordLegalOrValuation()){
+      approvalBlock = `<p class="empty" style="margin-bottom:12px;">Awaiting a decision from another Manager/Head/Admin — you proposed v${summary.version} yourself, so you can't approve or reject it.</p>`;
+    }
+  }
+  return `
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Ver.</th><th>Date</th><th>Status</th><th>Price / Advance</th><th>Mode</th><th>Proposed By</th><th>Remarks</th></tr>${rows}</table>
+    </div>
+    ${approvalBlock}
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="prop-date" value="${todayStr()}"></div>
+      <div><label>Status</label><select id="prop-status">${PROPOSAL_DRAFT_STATUSES.map(s=>`<option ${s==='Draft'?'selected':''}>${s}</option>`).join('')}</select></div>
+      <div><label>Mode of Acquisition</label><select id="prop-mode">${MODE_OF_ACQUISITION.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div id="prop-price-wrap"><label>Price (Outright)</label><input type="number" id="prop-price" step="0.01" placeholder="Total purchase price"></div>
+      <div id="prop-advance-wrap" style="display:none;"><label>Advance (Joint Venture)</label><input type="number" id="prop-advance" step="0.01" placeholder="Advance paid to landowner"></div>
+      <div class="full"><label>Payment Schedule / Terms</label><input type="text" id="prop-schedule" placeholder="e.g. 25% advance, 75% on registration"></div>
+      <div class="full"><label>Remarks</label><input type="text" id="prop-remarks"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="prop-add">Save Proposal Version</button></div>
+  `;
+}
+
+// Payments (spec Module 12) — append-only log, same discipline as every
+// other history on this file: a payment is a permanent record, never
+// edited or removed after the fact (a mistaken entry is corrected the same
+// way a mistaken negotiation round would be — a later note, not a rewrite).
+// Recording a new payment is gated to canRecordFinancialEntry() (Manager/
+// Head/Admin); any role incl. Executive can still VIEW the full history.
+function renderPaymentsTab(l){
+  const log = (l.paymentLog||[]);
+  const summary = paymentSummary(l);
+  const summaryBlock = `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Total Agreed Value</label><div>${summary.agreedTotal!=null?fmtNum(summary.agreedTotal):'—'} ${summary.agreedTotal==null?'<span style="color:var(--muted)">(no Approved proposal yet)</span>':''}</div></div>
+      <div><label>Total Paid</label><div>${fmtNum(summary.totalPaid)}</div></div>
+      <div><label>Balance Due</label><div style="${summary.balanceDue!=null && summary.balanceDue>0?'color:var(--danger,#c0392b);font-weight:600;':''}">${summary.balanceDue!=null?fmtNum(summary.balanceDue):'—'}</div></div>
+      <div><label>Last Payment Date</label><div>${summary.lastPaymentDate?fmtDate(summary.lastPaymentDate):'—'}</div></div>
+    </div>`;
+  const rows = log.slice().reverse().map(p=>`<tr>
+      <td>${fmtDate(p.date)}</td><td>${p.paymentType||'—'}</td><td>${p.mode||'—'}</td>
+      <td>${fmtNum(p.amount)}</td><td>${p.referenceNumber||'—'}</td><td>${p.paidTo||'—'}</td>
+      <td>${p.recordedBy||'—'}</td><td>${p.remarks||''}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">No payments recorded yet.</td></tr>';
+  const canAdd = canRecordFinancialEntry();
+  return `
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Date</th><th>Type</th><th>Mode</th><th>Amount</th><th>Reference No.</th><th>Paid To</th><th>Recorded By</th><th>Remarks</th></tr>${rows}</table>
+    </div>
+    ${canAdd ? `
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="pay-date" value="${todayStr()}"></div>
+      <div><label>Payment Type</label><select id="pay-type">${PAYMENT_TYPES.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div><label>Mode</label><select id="pay-mode">${PAYMENT_MODES.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div><label>Amount</label><input type="number" id="pay-amount" step="0.01"></div>
+      <div><label>Reference No.</label><input type="text" id="pay-ref" placeholder="Txn / cheque no."></div>
+      <div><label>Paid To</label><input type="text" id="pay-to" placeholder="e.g. Landowner, Mediator"></div>
+      <div class="full"><label>Remarks</label><input type="text" id="pay-remarks"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="pay-add">Record Payment</button></div>
+    ` : ''}
+  `;
+}
+
+// Registration (spec Module 13) — same append-only history as Payments
+// above. Gated to canRecordFinancialEntry() the same way, with Executive
+// kept to view-only, consistent with every other "narrower than Executive"
+// precedent in this file.
+function renderRegistrationTab(l){
+  const log = (l.registrationLog||[]);
+  const summary = registrationSummary(l);
+  const summaryBlock = summary ? `
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div><label>Registration No.</label><div>${summary.latest.registrationNumber||'—'}</div></div>
+      <div><label>Registration Date</label><div>${fmtDate(summary.latest.date)}</div></div>
+      <div><label>SRO Office</label><div>${summary.latest.sroOffice||'—'}</div></div>
+      <div><label>Document Type</label><div>${summary.latest.documentType||'—'}</div></div>
+      <div><label>Stamp Duty</label><div>${summary.latest.stampDuty!=null?fmtNum(summary.latest.stampDuty):'—'}</div></div>
+      <div><label>Registration Charges</label><div>${summary.latest.registrationCharges!=null?fmtNum(summary.latest.registrationCharges):'—'}</div></div>
+    </div>` : '<p class="empty">No registration recorded yet.</p>';
+  const rows = log.slice().reverse().map(r=>`<tr>
+      <td>${fmtDate(r.date)}</td><td>${r.registrationNumber||'—'}</td><td>${r.sroOffice||'—'}</td>
+      <td>${r.documentType||'—'}</td><td>${r.stampDuty!=null?fmtNum(r.stampDuty):'—'}</td>
+      <td>${r.registrationCharges!=null?fmtNum(r.registrationCharges):'—'}</td>
+      <td>${r.registeredBy||'—'}</td><td>${r.remarks||''}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">No registration entries yet.</td></tr>';
+  const canAdd = canRecordFinancialEntry();
+  return `
+    ${summaryBlock}
+    <div style="overflow-x:auto;">
+      <table style="margin-bottom:10px;"><tr><th>Date</th><th>Registration No.</th><th>SRO Office</th><th>Document Type</th><th>Stamp Duty</th><th>Reg. Charges</th><th>Registered By</th><th>Remarks</th></tr>${rows}</table>
+    </div>
+    ${canAdd ? `
+    <div class="form-grid">
+      <div><label>Date</label><input type="date" id="reg-date" value="${todayStr()}"></div>
+      <div><label>Registration No.</label><input type="text" id="reg-number"></div>
+      <div><label>SRO Office</label><input type="text" id="reg-sro"></div>
+      <div><label>Document Type</label><select id="reg-doctype">${REGISTRATION_DOCUMENT_TYPES.map(s=>`<option>${s}</option>`).join('')}</select></div>
+      <div><label>Stamp Duty</label><input type="number" id="reg-stamp" step="0.01"></div>
+      <div><label>Registration Charges</label><input type="number" id="reg-charges" step="0.01"></div>
+      <div class="full"><label>Remarks</label><input type="text" id="reg-remarks"></div>
+    </div>
+    <div style="margin-top:8px;"><button class="btn btn-sm btn-teal" id="reg-add">Record Registration</button></div>
+    ` : ''}
   `;
 }
 
@@ -3832,6 +4910,7 @@ function wireDetailTabEvents(l){
         leadSource: (val('ov-e-source')||'').trim(),
         leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime,
         channelPartnerCode: (val('ov-e-cp')||'').trim(),
+        projectCode: (val('ov-e-project')||'').trim(),
         village: (val('ov-e-village')||'').trim(),
         siteLocation: (val('ov-e-loc')||'').trim(),
         surveyNumber: (val('ov-e-survey')||'').trim(),
@@ -3943,6 +5022,15 @@ function wireDetailTabEvents(l){
     if(btn) btn.onclick = async () => {
       const name = document.getElementById('doc-name').value.trim();
       if(!name){ alert('Enter a document name.'); return; }
+      const docMeta = {
+        category: document.getElementById('doc-category')?.value || '',
+        referenceNumber: document.getElementById('doc-refnum')?.value.trim() || '',
+        issueDate: document.getElementById('doc-issue')?.value || '',
+        expiryDate: document.getElementById('doc-expiry')?.value || '',
+        remarks: document.getElementById('doc-remarks')?.value.trim() || '',
+        verificationStatus: 'Pending', verifiedBy: '', verificationDate: '',
+        uploadedBy: currentUser ? currentUser.name : '',
+      };
       if(liveUpload){
         const fileInput = document.getElementById('doc-file');
         const file = fileInput.files[0];
@@ -3954,26 +5042,213 @@ function wireDetailTabEvents(l){
           const ref = DB.storageRef(path);
           await ref.put(file);
           const url = await ref.getDownloadURL();
-          await DB.updateLead(l.id, { documents: (l.documents||[]).concat([{name, url, storagePath:path, addedAt:new Date().toISOString()}]) });
+          await DB.updateLead(l.id, { documents: (l.documents||[]).concat([Object.assign({name, url, storagePath:path, addedAt:new Date().toISOString()}, docMeta)]) });
         }catch(err){
           statusEl.textContent = 'Upload failed: ' + err.message;
           return;
         }
       } else {
         const url = document.getElementById('doc-url').value.trim() || '(no reference given)';
-        await DB.updateLead(l.id, { documents: (l.documents||[]).concat([{name, url, addedAt:new Date().toISOString()}]) });
+        await DB.updateLead(l.id, { documents: (l.documents||[]).concat([Object.assign({name, url, addedAt:new Date().toISOString()}, docMeta)]) });
       }
       renderDetailModal(l.id);
     };
+  }
+  {
+    // Verification can never be inferred just from uploading (per spec) —
+    // this is the only thing that sets verificationStatus away from
+    // 'Pending', and canVerifyDocument() already hides these buttons from
+    // Executives in renderDocumentsTab().
+    document.querySelectorAll('[data-doc-verify]').forEach(b=>b.onclick = async () => {
+      const i = parseInt(b.dataset.docVerify, 10);
+      const docs = (l.documents||[]).slice();
+      if(!docs[i]) return;
+      docs[i] = Object.assign({}, docs[i], {
+        verificationStatus: b.dataset.docStatus,
+        verifiedBy: currentUser ? currentUser.name : '',
+        verificationDate: todayStr(),
+      });
+      await DB.updateLead(l.id, { documents: docs });
+      renderDetailModal(l.id);
+    });
   }
   {
     const btn = document.getElementById('neg-add');
     if(btn) btn.onclick = async () => {
       const amount = parseFloat(document.getElementById('neg-amount').value);
       if(isNaN(amount)) { alert('Enter an amount.'); return; }
+      const num = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
+      // Appended, never overwritten — each negotiation round is its own
+      // permanent record (see negotiationSummary()'s own comment).
       await DB.updateLead(l.id, { negotiationLog: (l.negotiationLog||[]).concat([{
         date: document.getElementById('neg-date').value, offerBy: document.getElementById('neg-by').value,
-        amount, notes: document.getElementById('neg-notes').value.trim()
+        negotiatedWith: document.getElementById('neg-with').value.trim(),
+        amount,
+        pricePerAcre: num('neg-ppa'), pricePerCent: num('neg-ppc'),
+        otherCharges: num('neg-other'), brokerCommission: num('neg-commission'),
+        paymentTerms: document.getElementById('neg-terms').value.trim(),
+        status: document.getElementById('neg-status').value,
+        notes: document.getElementById('neg-notes').value.trim(),
+        recordedBy: currentUser ? currentUser.name : '',
+      }])});
+      renderDetailModal(l.id);
+    };
+  }
+  {
+    const btn = document.getElementById('legal-add');
+    if(btn) btn.onclick = async () => {
+      // Appended, never overwritten — same discipline as negotiationLog
+      // (see legalVerificationSummary()'s own comment). Button only renders
+      // for canRecordLegalOrValuation(), but the guard is repeated here too
+      // in case this ever gets wired from somewhere else.
+      if(!canRecordLegalOrValuation()) return;
+      await DB.updateLead(l.id, { legalVerificationLog: (l.legalVerificationLog||[]).concat([{
+        date: document.getElementById('legal-date').value,
+        titleStatus: document.getElementById('legal-title').value,
+        encumbranceStatus: document.getElementById('legal-enc').value,
+        encumbrancePeriod: document.getElementById('legal-enc-period').value.trim(),
+        litigationStatus: document.getElementById('legal-litigation').value,
+        litigationDetails: document.getElementById('legal-litigation-details').value.trim(),
+        pattaChittaVerified: document.getElementById('legal-patta').value,
+        legalRiskRating: document.getElementById('legal-risk').value,
+        remarks: document.getElementById('legal-remarks').value.trim(),
+        verifiedBy: currentUser ? currentUser.name : '',
+      }])});
+      renderDetailModal(l.id);
+    };
+  }
+  {
+    const btn = document.getElementById('val-add');
+    if(btn) btn.onclick = async () => {
+      const guidelineRate = parseFloat(document.getElementById('val-guideline').value);
+      if(isNaN(guidelineRate)) { alert('Enter a guideline rate.'); return; }
+      if(!canRecordLegalOrValuation()) return;
+      const num = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
+      // Appended, never overwritten — same discipline as negotiationLog
+      // (see valuationSummary()'s own comment).
+      await DB.updateLead(l.id, { valuationLog: (l.valuationLog||[]).concat([{
+        date: document.getElementById('val-date').value,
+        method: document.getElementById('val-method').value,
+        guidelineRate, marketRate: num('val-market'), agreedRate: num('val-agreed'), totalValuation: num('val-total'),
+        remarks: document.getElementById('val-remarks').value.trim(),
+        valuedBy: currentUser ? currentUser.name : '',
+      }])});
+      renderDetailModal(l.id);
+    };
+  }
+  {
+    // Price (Outright) / Advance (Joint Venture) are mutually exclusive —
+    // toggled by mode, same idea as the live Days/₹ recompute elsewhere in
+    // this file. Wired on every render so switching mode while the form is
+    // already open updates immediately, without needing a full re-render.
+    const modeSel = document.getElementById('prop-mode');
+    const priceWrap = document.getElementById('prop-price-wrap');
+    const advanceWrap = document.getElementById('prop-advance-wrap');
+    const syncModeFields = () => {
+      if(!modeSel) return;
+      const isJV = modeSel.value === 'Joint Venture';
+      if(priceWrap) priceWrap.style.display = isJV ? 'none' : '';
+      if(advanceWrap) advanceWrap.style.display = isJV ? '' : 'none';
+    };
+    if(modeSel) modeSel.addEventListener('change', syncModeFields);
+    syncModeFields();
+  }
+  {
+    const btn = document.getElementById('prop-add');
+    if(btn) btn.onclick = async () => {
+      const mode = document.getElementById('prop-mode').value;
+      const isJV = mode === 'Joint Venture';
+      const price = parseFloat(document.getElementById('prop-price').value);
+      const advance = parseFloat(document.getElementById('prop-advance').value);
+      if(isJV && isNaN(advance)) { alert('Enter the Advance amount for this Joint Venture proposal.'); return; }
+      if(!isJV && isNaN(price)) { alert('Enter the Price for this Outright proposal.'); return; }
+      // Appended, never overwritten — each draft/revision/decision is its
+      // own permanent version (see proposalSummary()'s own comment). Not
+      // role-gated the same way Legal/Valuation are — see
+      // renderAcquisitionProposalTab()'s comment for why.
+      await DB.updateLead(l.id, { acquisitionProposalLog: (l.acquisitionProposalLog||[]).concat([{
+        date: document.getElementById('prop-date').value,
+        status: document.getElementById('prop-status').value,
+        proposedPurchasePrice: isJV ? null : price,
+        advanceAmount: isJV ? advance : null,
+        modeOfAcquisition: mode,
+        paymentSchedule: document.getElementById('prop-schedule').value.trim(),
+        remarks: document.getElementById('prop-remarks').value.trim(),
+        proposedBy: currentUser ? currentUser.name : '',
+      }])});
+      renderDetailModal(l.id);
+    };
+  }
+  {
+    // Approvals (spec Module 11) — a decision is itself a NEW appended
+    // version (never an edit of the version being decided on), carrying
+    // forward that version's own price/advance/mode/schedule so the
+    // history row still shows the full proposal context, not just a bare
+    // status change. canApproveProposal() re-checks role + no-self-approval
+    // here too, in case this ever gets wired from somewhere the UI guard
+    // already hid the button from (belt-and-suspenders, same pattern as
+    // the other action buttons in this file).
+    function wireDecision(btnId, status){
+      const btn = document.getElementById(btnId);
+      if(!btn) return;
+      btn.onclick = async () => {
+        const log = l.acquisitionProposalLog || [];
+        const latest = log[log.length-1];
+        if(!latest) return;
+        if(!canApproveProposal(latest)){ alert('You can’t approve or reject your own proposal — ask another Manager/Head/Admin to decide.'); return; }
+        await DB.updateLead(l.id, { acquisitionProposalLog: log.concat([{
+          date: todayStr(), status,
+          proposedPurchasePrice: latest.proposedPurchasePrice,
+          advanceAmount: latest.advanceAmount,
+          modeOfAcquisition: latest.modeOfAcquisition,
+          paymentSchedule: latest.paymentSchedule,
+          remarks: document.getElementById('appr-remarks')?.value.trim() || '',
+          proposedBy: currentUser ? currentUser.name : '',
+        }])});
+        renderDetailModal(l.id);
+      };
+    }
+    wireDecision('appr-approve', 'Approved');
+    wireDecision('appr-reject', 'Rejected');
+  }
+  {
+    const btn = document.getElementById('pay-add');
+    if(btn) btn.onclick = async () => {
+      const amount = parseFloat(document.getElementById('pay-amount').value);
+      if(isNaN(amount)){ alert('Enter the payment amount.'); return; }
+      if(!canRecordFinancialEntry()) return;
+      // Appended, never overwritten — same discipline as every other log in
+      // this file (see paymentSummary()'s own comment).
+      await DB.updateLead(l.id, { paymentLog: (l.paymentLog||[]).concat([{
+        date: document.getElementById('pay-date').value,
+        paymentType: document.getElementById('pay-type').value,
+        mode: document.getElementById('pay-mode').value,
+        amount,
+        referenceNumber: document.getElementById('pay-ref').value.trim(),
+        paidTo: document.getElementById('pay-to').value.trim(),
+        remarks: document.getElementById('pay-remarks').value.trim(),
+        recordedBy: currentUser ? currentUser.name : '',
+      }])});
+      renderDetailModal(l.id);
+    };
+  }
+  {
+    const btn = document.getElementById('reg-add');
+    if(btn) btn.onclick = async () => {
+      const regNumber = document.getElementById('reg-number').value.trim();
+      if(!regNumber){ alert('Enter the Registration Number.'); return; }
+      if(!canRecordFinancialEntry()) return;
+      const num = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
+      // Appended, never overwritten — same discipline as every other log in
+      // this file (see registrationSummary()'s own comment).
+      await DB.updateLead(l.id, { registrationLog: (l.registrationLog||[]).concat([{
+        date: document.getElementById('reg-date').value,
+        registrationNumber: regNumber,
+        sroOffice: document.getElementById('reg-sro').value.trim(),
+        documentType: document.getElementById('reg-doctype').value,
+        stampDuty: num('reg-stamp'), registrationCharges: num('reg-charges'),
+        remarks: document.getElementById('reg-remarks').value.trim(),
+        registeredBy: currentUser ? currentUser.name : '',
       }])});
       renderDetailModal(l.id);
     };
@@ -4003,6 +5278,7 @@ function wireViewEvents(){
   if(currentView==='list'){ wireListEvents(); }
   if(currentView==='newLead'){ wireNewLeadViewEvents(); }
   if(currentView==='reports'){ wireReportsEvents(); }
+  if(currentView==='analytics'){ wireAnalyticsEvents(); }
   if(currentView==='configure'){ wireConfigureEvents(); }
   if(currentView==='masters'){ wireMastersEvents(); }
   if(currentView==='landowners'){ wireLandownersEvents(); }
@@ -4011,6 +5287,7 @@ function wireViewEvents(){
   if(currentView==='workflow'){ wireWorkflowEvents(); }
   if(currentView==='statusConfig'){ wireStatusConfigEvents(); }
   if(currentView==='pageAccess'){ wirePageAccessEvents(); }
+  if(currentView==='auditTrail'){ wireAuditTrailEvents(); }
 }
 
 // ---- Sidebar navigation ---------------------------------------------------
