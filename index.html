@@ -957,14 +957,17 @@ class MemoryDB {
   getLead(id){ return this.leads.find(l=>l.id===id); }
   async addLead(lead){ const withId = Object.assign({}, lead, { id: lead.leadId }); this.leads.unshift(withId); }
   async updateLead(id, patch){ const i=this.leads.findIndex(l=>l.id===id); if(i>-1) this.leads[i]=Object.assign({}, this.leads[i], patch, {updatedAt:new Date().toISOString()}); }
-  // Frozen (On Hold) lead reassignment — every check here is re-run
-  // regardless of what the UI already filtered, so a direct call can never
-  // bypass same-Manager/role/active-user enforcement (see canReassignLead()/
-  // eligibleReassignmentTargets() above). Appends to reassignmentHistory —
-  // never trims or overwrites it — and changes ONLY assignedExecutive on
-  // the SAME lead document; nothing else about the lead (status stays
-  // Frozen/On Hold, stageHistory/documents/etc. untouched, no new lead
-  // created).
+  // Reassignment — every check here is re-run regardless of what the UI
+  // already filtered, so a direct call can never bypass role/active-user
+  // enforcement (see canReassignLead()/eligibleReassignmentTargets()
+  // above). The destination Executive no longer has to report to the same
+  // Manager as the current one (widened per Sara's request — a lead can
+  // now cross branches), so the audit entry records BOTH the old and new
+  // Manager rather than assuming they're the same. Appends to
+  // reassignmentHistory — never trims or overwrites it — and changes ONLY
+  // assignedExecutive on the SAME lead document; nothing else about the
+  // lead (status stays Frozen/On Hold, stageHistory/documents/etc.
+  // untouched, no new lead created).
   async reassignLead(leadId, newExecutiveName, remarks){
     const lead = this.leads.find(l=>l.id===leadId);
     if(!lead) throw new Error('Lead not found.');
@@ -972,11 +975,12 @@ class MemoryDB {
     const currentExec = userByName(lead.assignedExecutive);
     const newExec = userByName(newExecutiveName);
     if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
-    if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
-    const manager = userByUid(currentExec.reportsTo);
+    const fromManager = currentExec ? userByUid(currentExec.reportsTo) : null;
+    const toManager = userByUid(newExec.reportsTo);
     const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
     const entry = {
-      fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
+      fromExecutive: lead.assignedExecutive, toExecutive: newExec.name,
+      fromManager: fromManager ? fromManager.name : '', toManager: toManager ? toManager.name : '',
       reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
       previousStatus: statusLabel, currentStatus: statusLabel,
     };
@@ -1280,11 +1284,14 @@ class FirestoreDB {
   // Same validation as MemoryDB.reassignLead() (see its comment), run
   // inside a Firestore transaction so a concurrent change to this exact
   // lead — someone else resuming it from hold, or reassigning it, at the
-  // same moment — can't race past the "still Frozen" / "still reports to
-  // this Manager" checks. Note serverTimestamp() isn't usable INSIDE an
-  // array element, so the audit entry's own timestamp is a plain ISO
-  // string (same as every other history entry already stored on a lead);
-  // only the document-level updatedAt uses the real server clock.
+  // same moment — can't race past the "still Frozen" / role checks. The
+  // destination Executive no longer has to report to the same Manager as
+  // the current one (widened per Sara's request — a lead can now cross
+  // branches), so the audit entry records BOTH the old and new Manager.
+  // Note serverTimestamp() isn't usable INSIDE an array element, so the
+  // audit entry's own timestamp is a plain ISO string (same as every other
+  // history entry already stored on a lead); only the document-level
+  // updatedAt uses the real server clock.
   async reassignLead(leadId, newExecutiveName, remarks){
     if(!currentUser) throw new Error('You are not authorized to reassign this lead.');
     const ref = this.fsdb.collection('leads').doc(leadId);
@@ -1296,11 +1303,12 @@ class FirestoreDB {
       const currentExec = userByName(lead.assignedExecutive);
       const newExec = userByName(newExecutiveName);
       if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
-      if(!currentExec || !currentExec.reportsTo || newExec.reportsTo !== currentExec.reportsTo) throw new Error('The new Executive must report to the same Manager as the current one.');
-      const manager = userByUid(currentExec.reportsTo);
+      const fromManager = currentExec ? userByUid(currentExec.reportsTo) : null;
+      const toManager = userByUid(newExec.reportsTo);
       const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
       const entry = {
-        fromExecutive: lead.assignedExecutive, toExecutive: newExec.name, manager: manager ? manager.name : '',
+        fromExecutive: lead.assignedExecutive, toExecutive: newExec.name,
+        fromManager: fromManager ? fromManager.name : '', toManager: toManager ? toManager.name : '',
         reassignedBy: currentUser.name, reassignedAt: new Date().toISOString(), remarks: (remarks||'').trim(),
         previousStatus: statusLabel, currentStatus: statusLabel,
       };
@@ -1469,17 +1477,19 @@ function canReassignLead(lead){
   if(currentUser.role==='manager') return isDirectReport(currentUser.uid, lead.assignedExecutive);
   return false;
 }
-// Every ACTIVE Executive reporting to the SAME Manager as the lead's
-// CURRENT Executive — never the current Executive themselves (nothing to
-// reassign to otherwise), and never anyone from another Manager's team,
-// enforced here (not just in whichever dropdown renders it) so this same
-// check also guards the actual save in DB.reassignLead() below. Returns []
-// if the current Executive isn't a real, linked user — nowhere safe to
-// reassign within "the same team" in that case.
+// Every ACTIVE Executive company-wide — never the current Executive
+// themselves (nothing to reassign to otherwise). Widened from the original
+// same-Manager-only pool (Sara's explicit request: "widen who can be
+// assigned") so a lead can move across branches, e.g. a Manager loaning a
+// lead to an Executive on another team. canReassignLead() above still
+// gates WHICH LEADS a given user may touch at all (a Manager only their
+// own reports' leads, a Head only their own branch's) — this only widens
+// the destination pool once that gate has already passed. Enforced here
+// (not just in whichever dropdown renders it) so this same check also
+// guards the actual save in DB.reassignLead() below.
 function eligibleReassignmentTargets(lead){
   const current = userByName(lead && lead.assignedExecutive);
-  if(!current || !current.reportsTo) return [];
-  return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && u.reportsTo===current.reportsTo && u.name!==current.name);
+  return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && (!current || u.name!==current.name));
 }
 
 // ---- Landowner & Land Parcel registries (Land Acquisition ERP spec,
@@ -4404,7 +4414,10 @@ function renderStageTab(l){
   // their own team, Admin always; never an Executive). The dropdown is
   // pre-scoped to eligibleReassignmentTargets(), but DB.reassignLead()
   // re-validates everything itself too — the dropdown's filtering is a
-  // convenience, not the actual enforcement.
+  // convenience, not the actual enforcement. The target pool is now
+  // company-wide (widened per Sara's request), so each option is labeled
+  // with that Executive's own Manager, since it's no longer implied to be
+  // the same Manager as the current assignee.
   const canReassign = canReassignLead(l);
   const reassignTargets = canReassign ? eligibleReassignmentTargets(l) : [];
   const currentExecForReassign = userByName(l.assignedExecutive);
@@ -4417,14 +4430,14 @@ function renderStageTab(l){
         <div class="form-grid">
           <div><label>Lead</label><div>${l.leadId}</div></div>
           <div><label>Current Executive</label><div>${l.assignedExecutive||'—'}</div></div>
-          <div><label>Manager</label><div>${managerForReassign ? managerForReassign.name : '—'}</div></div>
+          <div><label>Current Manager</label><div>${managerForReassign ? managerForReassign.name : '—'}</div></div>
           <div><label>New Executive</label><select id="reassign-new-exec">
             <option value="">— select —</option>
-            ${reassignTargets.map(u=>`<option value="${u.name}">${u.name}</option>`).join('')}
+            ${reassignTargets.map(u=>{ const m=userByUid(u.reportsTo); return `<option value="${u.name}">${u.name}${m?' — '+m.name:''}</option>`; }).join('')}
           </select></div>
           <div class="full"><label>Reassignment Remarks</label><input type="text" id="reassign-remarks" placeholder="e.g. Executive workload balancing"></div>
         </div>
-        ${!reassignTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No other eligible, active Executive reports to the same Manager yet.</p>` : ''}
+        ${!reassignTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No other eligible, active Executive exists yet.</p>` : ''}
         <div style="margin-top:10px;display:flex;gap:8px;">
           <button class="btn btn-sm btn-teal" id="reassign-confirm-btn">Confirm Reassignment</button>
           <button class="btn btn-sm btn-ghost" id="reassign-cancel-btn">Cancel</button>
@@ -4870,9 +4883,16 @@ function renderHistoryTab(l){
   // appended, oldest-last, same as the stage history above. Never trimmed
   // or overwritten (see reassignLead()), so a lead reassigned several
   // times keeps every prior entry here.
-  const reassignItems = (l.reassignmentHistory||[]).slice().reverse().map(r=>
-    `<div class="history-item"><b>Reassigned</b> — ${r.fromExecutive} → ${r.toExecutive} (Manager: ${r.manager||'—'})${r.remarks?': '+r.remarks:''}<div class="when">${fmtDate(r.reassignedAt)} · by ${r.reassignedBy||''} · status stayed ${r.currentStatus||'Frozen'}</div></div>`
-  ).join('');
+  // fromManager/toManager are the current fields (reassignment can now
+  // cross branches); older entries only have a single `manager` field from
+  // back when the target pool was same-Manager-only — fall back to that so
+  // pre-existing seed/history entries still render correctly.
+  const reassignItems = (l.reassignmentHistory||[]).slice().reverse().map(r=>{
+    const fromMgr = r.fromManager || r.manager || '—';
+    const toMgr = r.toManager || r.manager || '—';
+    const mgrLabel = fromMgr===toMgr ? `Manager: ${fromMgr}` : `Manager: ${fromMgr} → ${toMgr}`;
+    return `<div class="history-item"><b>Reassigned</b> — ${r.fromExecutive} → ${r.toExecutive} (${mgrLabel})${r.remarks?': '+r.remarks:''}<div class="when">${fmtDate(r.reassignedAt)} · by ${r.reassignedBy||''} · status stayed ${r.currentStatus||'Frozen'}</div></div>`;
+  }).join('');
   return items + reassignItems;
 }
 
