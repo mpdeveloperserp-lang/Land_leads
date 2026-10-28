@@ -606,6 +606,24 @@ function cpOwnerLinkTargets(){
   }
   return all; // admin/sysadmin — company-wide
 }
+// Shared mandatory/format validation for a Channel Partner's editable
+// fields — used by both the Add form (bottom of the Channel Partners list)
+// and the Modify form (Channel Partner Details page), so a record can never
+// be saved half-filled or malformed from either entry point. Name is
+// required; Phone is required and must be a plain 10-digit mobile number
+// (matches every seed/demo CP); Commission % is optional, but when given
+// must be a plain number from 0-100. Returns {ok, message}.
+function validateCPFields(fields){
+  if(!fields.name || !String(fields.name).trim()) return { ok:false, message:'Name is required.' };
+  const phone = String(fields.phone||'').trim();
+  if(!phone) return { ok:false, message:'Phone (mobile number) is required.' };
+  if(!/^[0-9]{10}$/.test(phone)) return { ok:false, message:'Phone must be a 10-digit mobile number.' };
+  if(fields.commissionPct !== '' && fields.commissionPct != null){
+    const n = Number(fields.commissionPct);
+    if(isNaN(n) || n < 0 || n > 100) return { ok:false, message:'Commission % must be a number between 0 and 100.' };
+  }
+  return { ok:true, message:'' };
+}
 
 // ---- Workflow config -------------------------------------------------------
 // Role-wise From Status -> To Status mapping (like the "Entity Wise Role And
@@ -2113,11 +2131,23 @@ let masterSearch = '';
 // request — "like a single page not in masters") — own edit/search state,
 // mirroring masterSearch/editingMasterId above but kept separate since this
 // is now its own page, not a Masters-page sub-mode.
+// editingCPId / linkingCPOwnerId now apply ONLY on the Channel Partner
+// Details page (see renderCPDetailPage()) — the list itself has no more
+// per-row actions; Code is clickable instead and routes here via
+// cpDetailId (see openCPDetail()/closeCPDetail()).
 let editingCPId = null;
 let cpSearch = '';
 // Which Channel Partner (if any) currently has its inline "Link/Change
-// Owner" mini-form open — see renderChannelPartnersView()'s Owner column.
+// Owner" mini-form open — see renderCPDetailPage().
 let linkingCPOwnerId = null;
+// id of the Channel Partner currently open on the standalone Details page
+// (null = show the list instead). cpDetailLoading briefly flags a fetch in
+// progress right after a Code is clicked, per Sara's "display a loading
+// indicator while fetching the details" request — the lookup itself is a
+// synchronous local read (Firestore keeps this cache live already), so this
+// is a short, deliberate pause rather than a real network wait.
+let cpDetailId = null;
+let cpDetailLoading = false;
 let editingLandownerId = null;
 let editingParcelId = null;
 // Draft list of {landownerId, landownerName, ownershipSharePct} rows for
@@ -3145,8 +3175,46 @@ function wireMastersEvents(){
 //      Classes/Drop Reasons, so it gets the same Manager/Head/Executive
 //      default tier as Landowners/Land Parcels (her explicit choice) rather
 //      than staying behind the Head/Admin-only Masters page. ------------
+//
+//      Redesign (later round, "select a Channel Partner using the CP
+//      Code"): the list itself no longer carries any inline action icons —
+//      its CP Code column is clickable instead and opens a dedicated,
+//      full-page Channel Partner Details view (cpDetailId), with its own
+//      Back button. Modify / Toggle Active / Link-Change Owner / Delete all
+//      moved there, each still gated exactly as before (Link/Delete stay
+//      off-limits to Executives; Modify/Toggle stay open to everyone who
+//      can reach this page at all). See renderCPDetailPage().
 const CP_DEF = MASTER_DEFS.find(m=>m.key==='channelPartners');
+
+function openCPDetail(id){
+  // Guards everyone uniformly against opening a CP outside what they can
+  // access, not just via the row click — same belt-and-suspenders
+  // precedent as openLeadDetail().
+  if(!visibleAllChannelPartners().some(c=>c.id===id)){
+    alert('This Channel Partner could not be found, or is outside what you can access.');
+    return;
+  }
+  cpDetailId = id;
+  editingCPId = null;
+  linkingCPOwnerId = null;
+  cpDetailLoading = true;
+  render();
+  // The lookup itself is an instant local read (Firestore already keeps
+  // this cache live via DB.onChange() above) — this short, deliberate
+  // pause is what "display a loading indicator while fetching the
+  // details" asked for, not a real network wait.
+  setTimeout(() => { cpDetailLoading = false; render(); }, 180);
+}
+function closeCPDetail(){
+  cpDetailId = null;
+  editingCPId = null;
+  linkingCPOwnerId = null;
+  cpDetailLoading = false;
+  render();
+}
+
 function renderChannelPartnersView(){
+  if(cpDetailId) return renderCPDetailPage();
   // Manager-wise visibility (canSeeCP()) is unchanged — this page just
   // moved WHERE that already-filtered list is shown, not how it's filtered.
   // Auto-code generation still scans the FULL, unfiltered list so two
@@ -3158,45 +3226,20 @@ function renderChannelPartnersView(){
   const displayItems = search
     ? items.filter(it => [(it.code||''),(it.name||''),(it.phone||'')].some(v => String(v).toLowerCase().includes(search)))
     : items;
-  const canLink = canLinkCPOwner();
-  const linkTargets = canLink ? cpOwnerLinkTargets() : [];
   const rows = displayItems.map(it=>{
     const creator = cpCreator(it);
-    const linkRow = linkingCPOwnerId===it.id ? `
-      <tr><td colspan="8" style="background:var(--bg-soft,#f6f8fa);padding:10px 14px;">
-        <div class="form-grid" style="margin-bottom:0;">
-          <div><label>${creator ? 'Re-link to' : 'Link to'} (Manager or Executive)</label>
-            <select id="cp-link-target">
-              <option value="">— select —</option>
-              ${linkTargets.map(u=>`<option value="${u.uid}">${u.name} (${ROLE_LABELS[u.role]})</option>`).join('')}
-            </select>
-          </div>
-        </div>
-        ${!linkTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No eligible Manager/Executive to link to.</p>` : ''}
-        <div style="margin-top:8px;display:flex;gap:8px;">
-          <button class="btn btn-sm btn-teal" id="cp-link-save" data-cp-link-save="${it.id}">Save Owner</button>
-          <button class="btn btn-sm btn-ghost" id="cp-link-cancel">Cancel</button>
-        </div>
-      </td></tr>` : '';
     return `<tr>
-      ${CP_DEF.fields.map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
+      <td class="clickable-row" data-id="${it.id}" title="Open Channel Partner Details"><b>${it.code||'—'}</b></td>
+      ${CP_DEF.fields.slice(1).map(f=>`<td>${it[f]!=null && it[f]!=='' ? it[f] : '—'}</td>`).join('')}
       <td>${cpLeadCount(it.code)}</td>
       <td>${creator ? creator.name : '<span class="badge badge-muted">Shared / Legacy</span>'}</td>
       <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
-      <td class="master-actions">
-        <button class="icon-btn icon-ok" data-cp-toggle="${it.id}" title="${it.active!==false?'Deactivate':'Activate'}">${it.active!==false?'✓':'○'}</button>
-        <button class="icon-btn icon-edit" data-cp-edit="${it.id}" title="Edit">✎</button>
-        ${canLink ? `<button class="icon-btn" data-cp-link-open="${it.id}" title="${creator?'Change':'Link'} Owner">🔗</button>` : ''}
-        ${canDeleteChannelPartner() ? `<button class="icon-btn icon-del" data-cp-delete="${it.id}" title="Delete permanently">🗑</button>` : ''}
-      </td>
-    </tr>${linkRow}`;
-  }).join('') || `<tr><td colspan="8" class="empty">${search ? 'No Channel Partner matches that search.' : 'No Channel Partners yet.'}</td></tr>`;
-
-  const editing = editingCPId ? items.find(i=>i.id===editingCPId) : null;
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="empty">${search ? 'No Channel Partner matches that search.' : 'No Channel Partners yet.'}</td></tr>`;
 
   return `
     <div class="page-header"><h1>Channel Partners</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible per the same Manager-wise ownership as your Leads — a Channel Partner created before that rule existed shows as "Shared / Legacy" and stays visible to everyone until it's linked to a Manager or Executive below.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible per the same Manager-wise ownership as your Leads — a Channel Partner created before that rule existed shows as "Shared / Legacy" and stays visible to everyone until it's linked to a Manager or Executive. Click a CP Code to view its full details, modify it, or manage it.</p>
     <div class="card filter-panel">
       <div class="form-grid">
         <div><label>Search (Name / Code / Mobile)</label><input type="text" id="cp-search" value="${cpSearch||''}" placeholder="e.g. 9884022222"></div>
@@ -3205,94 +3248,207 @@ function renderChannelPartnersView(){
     </div>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr>${CP_DEF.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Leads Sourced</th><th>Owner / Branch</th><th>Status</th><th>Actions</th></tr>
+        <tr>${CP_DEF.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Leads Sourced</th><th>Owner / Branch</th><th>Status</th></tr>
         ${rows}
       </table>
     </div>
     <div class="card">
-      <h2 class="section-title" style="margin-top:0;">${editing?'Edit Channel Partner':'Add Channel Partner'}</h2>
+      <h2 class="section-title" style="margin-top:0;">Add Channel Partner</h2>
       <div class="form-grid">
         ${CP_DEF.fields.map(f=>{
           if(CP_DEF.autoCode && f==='code'){
-            const codeVal = editing ? (editing.code||'') : nextMasterCode(CP_DEF.autoCode, allItemsForCode);
+            const codeVal = nextMasterCode(CP_DEF.autoCode, allItemsForCode);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
-          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
+          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value=""></div>`;
         }).join('')}
       </div>
-      <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — ${editing ? 'it stays as it was assigned and can\'t be changed here.' : 'the next one is shown above and is applied when you click Add.'} Adding a new Channel Partner here stamps you as its owner; editing an existing one never changes who owns it — use the 🔗 action for that.</p>
+      <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — the next one is shown above and is applied when you click Add. Adding a new Channel Partner here stamps you as its owner. Name and Phone are required; Phone must be a 10-digit mobile number.</p>
       <div style="margin-top:10px;display:flex;gap:8px;">
-        <button class="btn btn-sm btn-teal" id="cp-save">${editing?'Update':'Add'}</button>
-        ${editing?'<button class="btn btn-sm btn-ghost" id="cp-cancel">Cancel</button>':''}
+        <button class="btn btn-sm btn-teal" id="cp-save">Add</button>
       </div>
     </div>
   `;
 }
 
 function wireChannelPartnersEvents(){
+  if(cpDetailId){ wireCPDetailEvents(); return; }
+
   const searchEl = document.getElementById('cp-search');
   const runSearch = () => { cpSearch = searchEl.value; render(); };
   const goBtn = document.getElementById('cp-go');
   if(goBtn) goBtn.onclick = runSearch;
   if(searchEl) searchEl.addEventListener('input', runSearch);
 
-  document.querySelectorAll('[data-cp-edit]').forEach(b=>b.onclick = () => { editingCPId=b.dataset.cpEdit; linkingCPOwnerId=null; render(); });
-  document.querySelectorAll('[data-cp-toggle]').forEach(b=>b.onclick = async () => {
-    const it = DB.getAllMasters('channelPartners').find(x=>x.id===b.dataset.cpToggle);
-    const wasActive = it && it.active!==false;
-    await DB.toggleMaster('channelPartners', b.dataset.cpToggle);
-    await logAudit(wasActive?'Deactivated':'Activated', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '');
+  document.querySelectorAll('#view-root td.clickable-row[data-id]').forEach(td=>td.addEventListener('click', ()=>openCPDetail(td.dataset.id)));
+
+  const saveBtn = document.getElementById('cp-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const fields = {};
+    CP_DEF.fields.forEach(f=>{
+      const el = document.getElementById('cf-'+f);
+      let v = el.value.trim();
+      if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
+      fields[f] = v;
+    });
+    const check = validateCPFields(fields);
+    if(!check.ok){ alert(check.message); return; }
+    await DB.addMaster('channelPartners', fields);
+    await logAudit('Added', 'Channel Partner', masterItemLabel(CP_DEF, fields));
     render();
-  });
-  if(canDeleteChannelPartner()) document.querySelectorAll('[data-cp-delete]').forEach(b=>b.onclick = async () => {
-    if(!confirm('Delete this Channel Partner permanently? This cannot be undone.')) return;
-    const it = DB.getAllMasters('channelPartners').find(x=>x.id===b.dataset.cpDelete);
-    await DB.deleteMaster('channelPartners', b.dataset.cpDelete);
-    await logAudit('Deleted', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '');
-    if(editingCPId===b.dataset.cpDelete) editingCPId=null;
+  };
+}
+
+// ---- Channel Partner Details (standalone page reached by clicking a CP
+// Code on the list above). Always re-reads the record live from the DB by
+// id at render time — never trusts whatever the list last displayed — so a
+// stale/cached value is never shown or saved, per Sara's "fetch the latest
+// details from the existing data source" request. Modify / Toggle Active /
+// Link-Change Owner / Delete all live here now, each gated exactly as they
+// always were.
+function renderCPDetailPage(){
+  if(cpDetailLoading){
+    return `
+      <div class="page-header"><h1>Channel Partners</h1></div>
+      <button class="btn btn-sm btn-ghost" id="cpd-back" style="margin-bottom:12px;">&larr; Back to Channel Partners</button>
+      <div class="card"><p style="color:var(--muted);">Loading Channel Partner details…</p></div>`;
+  }
+  const cp = DB.getAllMasters('channelPartners').find(c=>c.id===cpDetailId);
+  if(!cp || !visibleAllChannelPartners().some(c=>c.id===cpDetailId)){
+    return `
+      <div class="page-header"><h1>Channel Partners</h1></div>
+      <button class="btn btn-sm btn-ghost" id="cpd-back" style="margin-bottom:12px;">&larr; Back to Channel Partners</button>
+      <div class="card"><p>This Channel Partner could not be found — it may have been deleted, or is outside what you can access.</p></div>`;
+  }
+  const creator = cpCreator(cp);
+  const canLink = canLinkCPOwner();
+  const canDelete = canDeleteChannelPartner();
+  const isEditing = editingCPId === cp.id;
+  const isLinking = linkingCPOwnerId === cp.id;
+  const linkTargets = canLink ? cpOwnerLinkTargets() : [];
+
+  const editForm = `
+    <div class="form-grid">
+      ${CP_DEF.fields.map(f=>{
+        if(CP_DEF.autoCode && f==='code'){
+          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cfd-${f}" value="${cp.code||''}" disabled title="Code can't be changed here"></div>`;
+        }
+        return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cfd-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${cp[f]!=null?cp[f]:''}"></div>`;
+      }).join('')}
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code can't be changed here. Name and Phone are required; Phone must be a 10-digit mobile number. Saving never changes who owns this record — use Link/Change Owner for that.</p>
+    <div style="margin-top:10px;display:flex;gap:8px;">
+      <button class="btn btn-sm btn-teal" id="cpd-save">Save</button>
+      <button class="btn btn-sm btn-ghost" id="cpd-cancel">Cancel</button>
+    </div>`;
+
+  const linkForm = isLinking ? `
+    <div class="card" style="background:var(--bg-soft,#f6f8fa);margin-top:12px;">
+      <div class="form-grid" style="margin-bottom:0;">
+        <div><label>${creator ? 'Re-link to' : 'Link to'} (Manager or Executive)</label>
+          <select id="cp-link-target">
+            <option value="">— select —</option>
+            ${linkTargets.map(u=>`<option value="${u.uid}">${u.name} (${ROLE_LABELS[u.role]})</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      ${!linkTargets.length ? `<p style="font-size:12px;color:var(--muted);margin-top:6px;">No eligible Manager/Executive to link to.</p>` : ''}
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="cp-link-save" data-cp-link-save="${cp.id}">Save Owner</button>
+        <button class="btn btn-sm btn-ghost" id="cp-link-cancel">Cancel</button>
+      </div>
+    </div>` : '';
+
+  const readOnly = `
+    <div class="form-grid">
+      ${CP_DEF.fields.map(f=>`<div><label>${FIELD_LABELS[f]||f}</label><div>${cp[f]!=null && cp[f]!=='' ? cp[f] : '—'}</div></div>`).join('')}
+      <div><label>Leads Sourced</label><div>${cpLeadCount(cp.code)}</div></div>
+      <div><label>Owner / Branch</label><div>${creator ? `${creator.name} (${ROLE_LABELS[creator.role]})` : '<span class="badge badge-muted">Shared / Legacy</span>'}</div></div>
+      <div><label>Status</label><div>${cp.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</div></div>
+    </div>
+    ${linkForm}
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-sm btn-ghost" id="cpd-modify">✎ Modify</button>
+      <button class="btn btn-sm btn-ghost" id="cpd-toggle" data-cp-toggle="${cp.id}">${cp.active!==false?'Deactivate':'Activate'}</button>
+      ${canLink && !isLinking ? `<button class="btn btn-sm btn-ghost" id="cpd-link-open" data-cp-link-open="${cp.id}">${creator?'Change':'Link'} Owner</button>` : ''}
+      ${canDelete ? `<button class="btn btn-sm btn-danger" id="cpd-delete" data-cp-delete="${cp.id}">Delete</button>` : ''}
+    </div>`;
+
+  return `
+    <div class="page-header"><h1>${cp.name || cp.code}</h1></div>
+    <button class="btn btn-sm btn-ghost" id="cpd-back" style="margin-bottom:12px;">&larr; Back to Channel Partners</button>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${isEditing ? 'Modify Channel Partner' : 'Channel Partner Details'}</h2>
+      ${isEditing ? editForm : readOnly}
+    </div>
+  `;
+}
+
+function wireCPDetailEvents(){
+  const backBtn = document.getElementById('cpd-back');
+  if(backBtn) backBtn.onclick = closeCPDetail;
+  if(cpDetailLoading) return; // nothing else on the page yet to wire up
+
+  const cp = DB.getAllMasters('channelPartners').find(c=>c.id===cpDetailId);
+  if(!cp) return;
+
+  const modifyBtn = document.getElementById('cpd-modify');
+  if(modifyBtn) modifyBtn.onclick = () => { editingCPId = cp.id; linkingCPOwnerId = null; render(); };
+  const cancelBtn = document.getElementById('cpd-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingCPId = null; render(); };
+  const saveBtn = document.getElementById('cpd-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const fields = {};
+    CP_DEF.fields.forEach(f=>{
+      if(f==='code') return; // never editable here
+      const el = document.getElementById('cfd-'+f);
+      let v = el.value.trim();
+      if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
+      fields[f] = v;
+    });
+    const check = validateCPFields(Object.assign({}, cp, fields));
+    if(!check.ok){ alert(check.message); return; }
+    await DB.updateMaster('channelPartners', cp.id, fields);
+    await logAudit('Updated', 'Channel Partner', masterItemLabel(CP_DEF, Object.assign({}, cp, fields)));
+    editingCPId = null;
     render();
-  });
+  };
+
+  const toggleBtn = document.getElementById('cpd-toggle');
+  if(toggleBtn) toggleBtn.onclick = async () => {
+    const wasActive = cp.active!==false;
+    await DB.toggleMaster('channelPartners', cp.id);
+    await logAudit(wasActive?'Deactivated':'Activated', 'Channel Partner', masterItemLabel(CP_DEF, cp));
+    render();
+  };
+
   if(canLinkCPOwner()){
-    document.querySelectorAll('[data-cp-link-open]').forEach(b=>b.onclick = () => { linkingCPOwnerId=b.dataset.cpLinkOpen; editingCPId=null; render(); });
+    const linkOpenBtn = document.getElementById('cpd-link-open');
+    if(linkOpenBtn) linkOpenBtn.onclick = () => { linkingCPOwnerId = cp.id; editingCPId = null; render(); };
     const linkCancelBtn = document.getElementById('cp-link-cancel');
-    if(linkCancelBtn) linkCancelBtn.onclick = () => { linkingCPOwnerId=null; render(); };
+    if(linkCancelBtn) linkCancelBtn.onclick = () => { linkingCPOwnerId = null; render(); };
     const linkSaveBtn = document.getElementById('cp-link-save');
     if(linkSaveBtn) linkSaveBtn.onclick = async () => {
       const targetUid = document.getElementById('cp-link-target').value;
       if(!targetUid){ alert('Select who to link this Channel Partner to.'); return; }
       const target = DB.getUsers().find(u=>u.uid===targetUid);
       if(!target) return;
-      const it = DB.getAllMasters('channelPartners').find(x=>x.id===linkSaveBtn.dataset.cpLinkSave);
-      await DB.updateMaster('channelPartners', linkSaveBtn.dataset.cpLinkSave, { createdByUid: target.uid, createdByName: target.name });
-      await logAudit('Linked to Owner', 'Channel Partner', it ? masterItemLabel(CP_DEF, it) : '', 'Owner set to '+target.name);
-      linkingCPOwnerId=null;
+      await DB.updateMaster('channelPartners', cp.id, { createdByUid: target.uid, createdByName: target.name });
+      await logAudit('Linked to Owner', 'Channel Partner', masterItemLabel(CP_DEF, cp), 'Owner set to '+target.name);
+      linkingCPOwnerId = null;
       render();
     };
   }
-  const saveBtn = document.getElementById('cp-save');
-  if(saveBtn) saveBtn.onclick = async () => {
-    const fields = {};
-    let ok = true;
-    CP_DEF.fields.forEach(f=>{
-      const el = document.getElementById('cf-'+f);
-      let v = el.value.trim();
-      if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
-      if(f===CP_DEF.fields[0] && v==='' ) ok = false;
-      fields[f] = v;
-    });
-    if(!ok){ alert('The first field is required.'); return; }
-    if(editingCPId){
-      await DB.updateMaster('channelPartners', editingCPId, fields);
-      await logAudit('Updated', 'Channel Partner', masterItemLabel(CP_DEF, fields));
-      editingCPId=null;
-    } else {
-      await DB.addMaster('channelPartners', fields);
-      await logAudit('Added', 'Channel Partner', masterItemLabel(CP_DEF, fields));
-    }
-    render();
-  };
-  const cancelBtn = document.getElementById('cp-cancel');
-  if(cancelBtn) cancelBtn.onclick = () => { editingCPId=null; render(); };
+
+  if(canDeleteChannelPartner()){
+    const deleteBtn = document.getElementById('cpd-delete');
+    if(deleteBtn) deleteBtn.onclick = async () => {
+      if(!confirm('Delete this Channel Partner permanently? This cannot be undone.')) return;
+      await DB.deleteMaster('channelPartners', cp.id);
+      await logAudit('Deleted', 'Channel Partner', masterItemLabel(CP_DEF, cp));
+      closeCPDetail();
+    };
+  }
 }
 
 // ---- MANAGE USERS (own module — was folded into Masters, now standalone) --
