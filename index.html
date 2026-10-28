@@ -201,6 +201,8 @@
       <button data-view="reports">Reports</button>
       <button data-view="configure">Configure</button>
       <button data-view="masters">Masters</button>
+      <button data-view="landowners">Landowners</button>
+      <button data-view="landParcels">Land Parcels</button>
       <div class="nav-group-label" id="admin-nav-label">System</div>
       <button data-view="users">Manage Users</button>
       <button data-view="workflow">Workflow Config</button>
@@ -294,9 +296,12 @@ function refreshStagesFromDB(){
   STAGE_KEYS = STAGES.map(s=>s.key);
   STAGE_INDEX = Object.fromEntries(STAGES.map((s,i)=>[s.key,i]));
 }
-const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1} };
+// hectare/sqm added for the Land Parcel module's extent fields (the spec's
+// own suggested unit list); ground/cent/acre/sqft are unchanged and still
+// drive every existing Lead extent/price field exactly as before.
+const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1}, hectare:{label:'Hectare',sqft:107639.1}, sqm:{label:'Sq. Metre',sqft:10.7639} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access' };
+const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', configure:'Configure — Lead Fields', masters:'Masters', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
@@ -333,6 +338,14 @@ const DEFAULT_VIEW_ACCESS = {
   reports:   ['admin','manager'],
   configure: ['admin','sysadmin'],
   masters:   ['admin','sysadmin'],
+  // Landowner & Land Parcel registries (MP Developers' Land Acquisition ERP
+  // spec, Modules 3-4) — same default as the other core lead-data pages:
+  // Executive/Manager/Head out of the box (the spec has Executives entering
+  // landowner/survey details directly), Admin (sysadmin) starts unticked
+  // here too until Head grants it via Page Access, matching that same
+  // existing precedent.
+  landowners:  ['admin','manager','executive'],
+  landParcels: ['admin','manager','executive'],
   users:       ['admin','sysadmin'],
   workflow:    ['admin','sysadmin'],
   statusConfig:['admin','sysadmin'],
@@ -645,6 +658,14 @@ const MASTER_DEFS = [
 ];
 const FIELD_LABELS = { label:'Label', code:'Code', name:'Name', phone:'Phone', commissionPct:'Commission %', taluk:'Taluk', district:'District', role:'Role' };
 
+// ---- Landowner & Land Parcel registries — supporting lists -------------
+// Fixed lists for now (not yet wired into their own Status-Config-style
+// editable master, the way Lead Status is) — a reasonable follow-up if she
+// wants Parcel Status configurable later too.
+const PREFERRED_CONTACT_METHODS = ['Phone','Email','WhatsApp','Postal','Other'];
+const PARCEL_STATUSES = ['Available','Under Negotiation','Partially Acquired','Fully Acquired','On Hold','Disputed','Dropped'];
+const YES_NO_PARTIAL = ['Yes','No','Partial'];
+
 function seedMaster(key){
   const data = {
     leadSources: ['Website Enquiry','Channel Partner','Direct / Walk-in','Referral','Field Survey','Cold Call','Other'].map(label=>({label})),
@@ -707,6 +728,25 @@ function readableTextOn(hex){
 
 function extentSqft(v,u){ return (Number(v)||0) * (EXTENT_UNITS[u]?.sqft || 1); }
 function pricePerSqft(v,u){ return (Number(v)||0) / (EXTENT_UNITS[u]?.sqft || 1); }
+// Converts a raw sqft figure back into any target unit — used to show a
+// Land Parcel's computed Balance Extent in the same unit as its Total
+// Recorded Extent, regardless of what units the other extent fields used.
+function sqftToUnit(sqft,u){ return (Number(sqft)||0) / (EXTENT_UNITS[u]?.sqft || 1); }
+// Last-10-digits comparison so "9840011111", "+91 98400 11111" and
+// "091-98400-11111" are all recognized as the same number for landowner
+// duplicate detection, without forcing one strict input format.
+function normalizePhoneDigits(p){ return String(p||'').replace(/\D/g,'').slice(-10); }
+// Same auto-numbering scheme as nextMasterCode() (see Masters), generalized
+// to whichever field name holds the code on a given record type, since
+// Landowners/Land Parcels aren't part of the generic MASTER_DEFS system.
+function nextEntityCode(prefix, items, codeField, padLen){
+  const re = new RegExp('^' + prefix + '-(\\d+)$');
+  const maxNum = (items||[]).reduce((max, it) => {
+    const m = re.exec(String(it[codeField]||'').trim());
+    return m ? Math.max(max, parseInt(m[1], 10)) : max;
+  }, 0);
+  return prefix + '-' + String(maxNum + 1).padStart(padLen||3, '0');
+}
 
 // ---- Sample seed leads (used to seed Firestore on first connect, and to
 //      populate the in-memory demo) ---------------------------------------
@@ -751,6 +791,30 @@ function seedLeads(){
   ];
 }
 
+// ---- Sample seed data for the Landowner & Land Parcel registries --------
+function seedLandowners(){
+  return [
+    { landownerCode:'LO-001', fullName:'Murugan K', contactNumber:'9840011111', altContactNumber:'', email:'', address:'12, Agraharam Street', district:'Kancheepuram', taluk:'Sriperumbudur', village:'Oragadam', idDocRef:'', preferredContact:'Phone', notes:'Primary contact for the Oragadam parcel.' },
+    { landownerCode:'LO-002', fullName:'Lakshmi Narayanan', contactNumber:'9884022222', altContactNumber:'9840099999', email:'lakshmi.n@example.com', address:'45, Market Road', district:'Chengalpattu', taluk:'Guduvancheri', village:'Guduvancheri', idDocRef:'', preferredContact:'WhatsApp', notes:'' },
+  ];
+}
+// leadId/landowners are passed in (rather than looked up globally) since
+// MemoryDB's constructor creates this.leads and this.landowners first and
+// hands their already-known ids/names straight in — keeping this function
+// a pure, no-dependency builder like seedMaster()/seedLeads() above it.
+function seedLandParcels(leadId, landowners){
+  const lo = (landowners||[])[0];
+  return [
+    { parcelCode:'PCL-0001', leadId: leadId||'', projectRef:'', district:'Kancheepuram', taluk:'Sriperumbudur', village:'Oragadam',
+      revenueVillageCode:'', surveyNumber:'245/2', subdivisionNumber:'A', pattaNumber:'1180', landClassification:'Agricultural',
+      totalExtentValue:2.5, totalExtentUnit:'acre', proposedExtentValue:2.5, proposedExtentUnit:'acre', previouslyAcquiredValue:0, previouslyAcquiredUnit:'acre',
+      boundaryNorth:'Village road', boundarySouth:'Dry land of S. Kannan', boundaryEast:'Govt poramboke', boundaryWest:'NH48 service road',
+      accessRoad:'20ft mud road, motorable', waterAvailability:'Yes', electricityAvailability:'Yes', existingStructures:'None', encroachmentInfo:'None observed',
+      landownerLinks: lo ? [{ landownerId: lo.id, landownerName: lo.fullName, ownershipSharePct: 100 }] : [],
+      parcelStatus:'Under Negotiation', remarks:'' },
+  ];
+}
+
 // =========================================================================
 // DATA LAYER — two implementations behind the same interface:
 //   getLeads(), getLead(id), addLead(lead), updateLead(id,patch)
@@ -766,6 +830,8 @@ class MemoryDB {
     MASTER_DEFS.forEach(m => {
       this.masters[m.key] = seedMaster(m.key).map((f,i) => Object.assign({ id: 'seed-'+m.key+'-'+i, active:true }, f));
     });
+    this.landowners = seedLandowners().map((f,i) => Object.assign({ id: 'seed-lo-'+i, active:true }, f));
+    this.landParcels = seedLandParcels(this.leads[0] ? this.leads[0].id : '', this.landowners).map((f,i) => Object.assign({ id: 'seed-pcl-'+i, active:true }, f));
     this.fieldConfig = DEFAULT_FIELD_CONFIG.map(f=>Object.assign({}, f));
     this.stages = DEFAULT_STAGE_CONFIG.map(s=>Object.assign({}, s));
     this.workflow = DEFAULT_WORKFLOW_CONFIG.map(w=>Object.assign({}, w));
@@ -868,6 +934,32 @@ class MemoryDB {
     if(!u) throw new Error('User not found.');
     u.password = newPassword;
   }
+  // ---- Landowner registry (Land Acquisition ERP, Module 3) ---------------
+  getLandowners(){ return this.landowners.filter(o=>o.active!==false); }
+  getAllLandowners(){ return this.landowners; }
+  getLandowner(id){ return this.landowners.find(o=>o.id===id); }
+  async addLandowner(fields){
+    const stamped = currentUser ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name }) : fields;
+    const rec = Object.assign({ id: uid('LO'), active:true, createdAt: new Date().toISOString() }, stamped);
+    this.landowners.push(rec);
+    return rec;
+  }
+  async updateLandowner(id, patch){ const i=this.landowners.findIndex(o=>o.id===id); if(i>-1) this.landowners[i]=Object.assign({}, this.landowners[i], patch, {updatedAt:new Date().toISOString()}); }
+  async toggleLandowner(id){ const o=this.landowners.find(x=>x.id===id); if(o) await this.updateLandowner(id, {active: !(o.active!==false)}); }
+  async deleteLandowner(id){ this.landowners = this.landowners.filter(o=>o.id!==id); }
+  // ---- Land Parcel & Survey registry (Land Acquisition ERP, Module 4) ----
+  getLandParcels(){ return this.landParcels.filter(p=>p.active!==false); }
+  getAllLandParcels(){ return this.landParcels; }
+  getLandParcel(id){ return this.landParcels.find(p=>p.id===id); }
+  async addLandParcel(fields){
+    const stamped = currentUser ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name }) : fields;
+    const rec = Object.assign({ id: uid('PCL'), active:true, createdAt: new Date().toISOString() }, stamped);
+    this.landParcels.push(rec);
+    return rec;
+  }
+  async updateLandParcel(id, patch){ const i=this.landParcels.findIndex(p=>p.id===id); if(i>-1) this.landParcels[i]=Object.assign({}, this.landParcels[i], patch, {updatedAt:new Date().toISOString()}); }
+  async toggleLandParcel(id){ const p=this.landParcels.find(x=>x.id===id); if(p) await this.updateLandParcel(id, {active: !(p.active!==false)}); }
+  async deleteLandParcel(id){ this.landParcels = this.landParcels.filter(p=>p.id!==id); }
 }
 
 class FirestoreDB {
@@ -883,8 +975,10 @@ class FirestoreDB {
     this.pageAccess = Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles: roles.slice()}));
     this.userPageAccess = [];
     this.users = [];
+    this.landowners = [];
+    this.landParcels = [];
     this._onChange = null;
-    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'userPageAccess', 'users', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
+    this._pending = new Set(['leads', 'fieldConfig', 'stages', 'workflow', 'pageAccess', 'userPageAccess', 'users', 'landowners', 'landParcels', ...MASTER_DEFS.map(m=>'master:'+m.key)]);
     this._readyResolvers = [];
   }
   onChange(cb){ this._onChange = cb; }
@@ -920,6 +1014,30 @@ class FirestoreDB {
       seed.forEach(lead=>{
         const ref = this.fsdb.collection('leads').doc();
         batch.set(ref, Object.assign({}, lead, { createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+      });
+      await batch.commit();
+    }
+    // One-time seed of sample landowners/land parcels if those collections
+    // are empty. The seed parcel is left unlinked to a specific lead here
+    // (leadId:'') since the just-seeded leads' real Firestore doc ids
+    // aren't known at this point without extra bookkeeping for what's only
+    // demo data — link it to a real lead from the Land Parcels page once
+    // you're populating real records.
+    const loSnap = await this.fsdb.collection('landowners').limit(1).get();
+    if(loSnap.empty){
+      const batch = this.fsdb.batch();
+      seedLandowners().forEach(f=>{
+        const ref = this.fsdb.collection('landowners').doc();
+        batch.set(ref, Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, f));
+      });
+      await batch.commit();
+    }
+    const pclSnap = await this.fsdb.collection('landParcels').limit(1).get();
+    if(pclSnap.empty){
+      const batch = this.fsdb.batch();
+      seedLandParcels('', []).forEach(f=>{
+        const ref = this.fsdb.collection('landParcels').doc();
+        batch.set(ref, Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, f));
       });
       await batch.commit();
     }
@@ -1001,6 +1119,18 @@ class FirestoreDB {
         if(this._onChange) this._onChange();
       }, err=>{ console.error(m.key+' listener error', err); this._markReady('master:'+m.key); });
     });
+
+    this.fsdb.collection('landowners').onSnapshot(snap=>{
+      this.landowners = snap.docs.map(d=>Object.assign({ id:d.id }, d.data()));
+      this._markReady('landowners');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('landowners listener error', err); this._markReady('landowners'); });
+
+    this.fsdb.collection('landParcels').onSnapshot(snap=>{
+      this.landParcels = snap.docs.map(d=>Object.assign({ id:d.id }, d.data()));
+      this._markReady('landParcels');
+      if(this._onChange) this._onChange();
+    }, err=>{ console.error('landParcels listener error', err); this._markReady('landParcels'); });
   }
   getLeads(){ return this.leads; }
   getLead(id){ return this.leads.find(l=>l.id===id); }
@@ -1126,6 +1256,28 @@ class FirestoreDB {
       throw new Error((err && err.message) || 'Could not change the password.');
     }
   }
+  // ---- Landowner registry (Land Acquisition ERP, Module 3) ---------------
+  getLandowners(){ return this.landowners.filter(o=>o.active!==false); }
+  getAllLandowners(){ return this.landowners; }
+  getLandowner(id){ return this.landowners.find(o=>o.id===id); }
+  async addLandowner(fields){
+    const stamped = currentUser ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name }) : fields;
+    await this.fsdb.collection('landowners').add(Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, stamped));
+  }
+  async updateLandowner(id, patch){ await this.fsdb.collection('landowners').doc(id).update(Object.assign({}, patch, { updatedAt: firebase.firestore.FieldValue.serverTimestamp() })); }
+  async toggleLandowner(id){ const o=this.landowners.find(x=>x.id===id); await this.updateLandowner(id, { active: !(o && o.active!==false) }); }
+  async deleteLandowner(id){ await this.fsdb.collection('landowners').doc(id).delete(); }
+  // ---- Land Parcel & Survey registry (Land Acquisition ERP, Module 4) ----
+  getLandParcels(){ return this.landParcels.filter(p=>p.active!==false); }
+  getAllLandParcels(){ return this.landParcels; }
+  getLandParcel(id){ return this.landParcels.find(p=>p.id===id); }
+  async addLandParcel(fields){
+    const stamped = currentUser ? Object.assign({}, fields, { createdByUid: currentUser.uid, createdByName: currentUser.name }) : fields;
+    await this.fsdb.collection('landParcels').add(Object.assign({ active:true, createdAt: firebase.firestore.FieldValue.serverTimestamp() }, stamped));
+  }
+  async updateLandParcel(id, patch){ await this.fsdb.collection('landParcels').doc(id).update(Object.assign({}, patch, { updatedAt: firebase.firestore.FieldValue.serverTimestamp() })); }
+  async toggleLandParcel(id){ const p=this.landParcels.find(x=>x.id===id); await this.updateLandParcel(id, { active: !(p && p.active!==false) }); }
+  async deleteLandParcel(id){ await this.fsdb.collection('landParcels').doc(id).delete(); }
 }
 
 // ---- Boot: pick MemoryDB or FirestoreDB, then render --------------------
@@ -1195,6 +1347,64 @@ function eligibleReassignmentTargets(lead){
   const current = userByName(lead && lead.assignedExecutive);
   if(!current || !current.reportsTo) return [];
   return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && u.reportsTo===current.reportsTo && u.name!==current.name);
+}
+
+// ---- Landowner & Land Parcel registries (Land Acquisition ERP spec,
+//      Modules 3-4) -------------------------------------------------------
+// Both are intentionally COMPANY-WIDE visible to anyone with Page Access to
+// their two pages — unlike the Manager-wise Lead/Channel-Partner visibility
+// elsewhere in this app. This is a deliberate, flagged difference: the
+// spec's own duplicate-landowner and duplicate-parcel detection only works
+// if every branch can see every other branch's entries; siloing these the
+// same way Leads are siloed would silently defeat that requirement.
+// Creating/editing either one needs only ordinary Page Access to the page
+// (same as any Masters page); permanently deleting one is kept to Manager/
+// Head/Admin, not Executive — matching this app's existing precedent of
+// Executives having narrower rights than the roles above them (see
+// canModifyLeadDetails()).
+function canDeleteLandRegistry(){
+  return !!(currentUser && currentUser.role !== 'executive');
+}
+function landownerById(id){ return (DB.getAllLandowners()||[]).find(o=>o.id===id); }
+// A parcel's Balance Available Extent, in sqft: Total Recorded minus
+// Previously Acquired minus Proposed Acquisition (all converted to a
+// common unit first since the three fields can each use a different one).
+// Negative means the parcel's own fields are internally inconsistent — more
+// land has been claimed against it than it actually has.
+function parcelBalanceSqft(p){
+  return extentSqft(p.totalExtentValue, p.totalExtentUnit)
+       - extentSqft(p.previouslyAcquiredValue, p.previouslyAcquiredUnit)
+       - extentSqft(p.proposedExtentValue, p.proposedExtentUnit);
+}
+// Possible-duplicate landowners: same (normalized) contact number, or the
+// same name in the same village — checked against EVERY landowner (active
+// or not), excluding the record being edited. A non-blocking warning only
+// (see wireLandownersEvents' save handler) — never auto-merged, per spec.
+function findDuplicateLandowners(fields, excludeId){
+  const phone = normalizePhoneDigits(fields.contactNumber);
+  const name = (fields.fullName||'').trim().toLowerCase();
+  const village = (fields.village||'').trim().toLowerCase();
+  return (DB.getAllLandowners()||[]).filter(o=>{
+    if(o.id===excludeId) return false;
+    const samePhone = phone && normalizePhoneDigits(o.contactNumber)===phone;
+    const sameNameVillage = name && village && (o.fullName||'').trim().toLowerCase()===name && (o.village||'').trim().toLowerCase()===village;
+    return samePhone || sameNameVillage;
+  });
+}
+// Possible-duplicate parcels: same Village + Survey Number + Subdivision
+// Number among active parcels, excluding the one being edited. Per spec,
+// survey number alone is never assumed unique — this only warns, it never
+// blocks the save (a genuine phase/re-entry of the same survey number can
+// be legitimate).
+function findDuplicateParcels(fields, excludeId){
+  const village = (fields.village||'').trim().toLowerCase();
+  const survey = (fields.surveyNumber||'').trim().toLowerCase();
+  const sub = (fields.subdivisionNumber||'').trim().toLowerCase();
+  if(!village || !survey) return [];
+  return (DB.getLandParcels()||[]).filter(p=>{
+    if(p.id===excludeId) return false;
+    return (p.village||'').trim().toLowerCase()===village && (p.surveyNumber||'').trim().toLowerCase()===survey && (p.subdivisionNumber||'').trim().toLowerCase()===sub;
+  });
 }
 
 function showConnectionBadge(live, note){
@@ -1531,6 +1741,19 @@ const PAGE_SIZE = 15;
 let selectedLeadIds = new Set();
 let currentMasterKey = MASTER_DEFS[0].key;
 let editingMasterId = null;
+let editingLandownerId = null;
+let editingParcelId = null;
+// Draft list of {landownerId, landownerName, ownershipSharePct} rows for
+// whichever parcel is currently being added/edited — kept separately from
+// the record itself while mid-edit, same "draft until Save" pattern as
+// Workflow Config's own draft rows, and reset whenever a different parcel
+// is opened/added or the Land Parcels nav button is freshly clicked.
+let parcelLandownerLinksDraft = null;
+// Set by "+ Add Parcel for this Lead" on a lead's detail modal — consumed
+// (and cleared) the next time renderLandParcelsView() builds a blank "Add"
+// form, so the new parcel starts pre-filled from that lead's own fields
+// instead of needing everything retyped.
+let pendingParcelPrefill = null;
 // Progress Details is one page with its own Status/Source/Channel
 // Partner/Executive/Date filter panel and a single results table.
 let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' };
@@ -1553,6 +1776,8 @@ function render(){
   else if(currentView==='reports') root.innerHTML = renderReports();
   else if(currentView==='configure') root.innerHTML = renderConfigure();
   else if(currentView==='masters') root.innerHTML = renderMasters();
+  else if(currentView==='landowners') root.innerHTML = renderLandownersView();
+  else if(currentView==='landParcels') root.innerHTML = renderLandParcelsView();
   else if(currentView==='users') root.innerHTML = renderUsersView();
   else if(currentView==='workflow') root.innerHTML = renderWorkflowView();
   else if(currentView==='statusConfig') root.innerHTML = renderStatusConfigView();
@@ -2352,6 +2577,340 @@ function wireUsersEvents(){
   if(cancelBtn) cancelBtn.onclick = () => { editingMasterId=null; render(); };
 }
 
+// ---- LANDOWNER REGISTRY (own module — Land Acquisition ERP, Module 3) ----
+// A separate master from the Lead itself (a lead's own flat Landowner Name/
+// Phone fields on the Overview tab are untouched by this — see
+// canModifyLeadDetails()'s renderOverviewTab()) so the same real person can
+// be recorded once and linked from any number of Land Parcels (see the
+// Land Parcels module just below), rather than re-typed on every lead that
+// happens to mention them.
+function renderLandownersView(){
+  const items = DB.getAllLandowners();
+  const editing = editingLandownerId ? items.find(o=>o.id===editingLandownerId) : null;
+  const rows = items.map(o=>{
+    const linkedParcels = DB.getAllLandParcels().filter(p=>(p.landownerLinks||[]).some(l=>l.landownerId===o.id));
+    return `<tr>
+      <td>${o.landownerCode||'—'}</td>
+      <td class="clickable-row" data-lo-open="${o.id}">${o.fullName}</td>
+      <td>${o.contactNumber||'—'}</td>
+      <td>${o.village||'—'}</td>
+      <td>${o.district||'—'}</td>
+      <td>${linkedParcels.length ? linkedParcels.length+' parcel(s)' : '—'}</td>
+      <td>${o.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-lo-toggle="${o.id}" title="${o.active!==false?'Deactivate':'Activate'}">${o.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-lo-edit="${o.id}" title="Edit">✎</button>
+        ${canDeleteLandRegistry() ? `<button class="icon-btn icon-del" data-lo-delete="${o.id}" title="Delete permanently">🗑</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="8" class="empty">No landowners yet.</td></tr>`;
+
+  const codeVal = editing ? (editing.landownerCode||'') : nextEntityCode('LO', items, 'landownerCode');
+
+  return `
+    <div class="page-header"><h1>Landowners</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible to anyone with access to this page, company-wide — not scoped per-Manager like Leads — so a possible duplicate (same phone number, or same name in the same village) can actually be spotted and flagged across every branch, not just your own.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Code</th><th>Full Name</th><th>Contact</th><th>Village</th><th>District</th><th>Linked Parcels</th><th>Status</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing?'Edit Landowner':'Add Landowner'}</h2>
+      <div class="form-grid">
+        <div><label>Landowner ID</label><input type="text" id="lo-code" value="${codeVal}" disabled title="Generated automatically — not editable"></div>
+        <div><label>Full Name *</label><input type="text" id="lo-name" value="${editing?editing.fullName:''}"></div>
+        <div><label>Contact Number *</label><input type="text" id="lo-contact" value="${editing?(editing.contactNumber||''):''}"></div>
+        <div><label>Alternate Contact Number</label><input type="text" id="lo-alt-contact" value="${editing?(editing.altContactNumber||''):''}"></div>
+        <div><label>Email</label><input type="email" id="lo-email" value="${editing?(editing.email||''):''}"></div>
+        <div><label>District</label><input type="text" id="lo-district" value="${editing?(editing.district||''):''}"></div>
+        <div><label>Taluk</label><input type="text" id="lo-taluk" value="${editing?(editing.taluk||''):''}"></div>
+        <div><label>Village</label><input type="text" id="lo-village" value="${editing?(editing.village||''):''}"></div>
+        <div><label>Preferred Communication</label><select id="lo-pref">${PREFERRED_CONTACT_METHODS.map(m=>`<option value="${m}" ${editing&&editing.preferredContact===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div><label>ID Document Reference</label><input type="text" id="lo-iddoc" value="${editing?(editing.idDocRef||''):''}" placeholder="e.g. Aadhaar/Passport ref — the document itself is stored under Documents (not built yet)"></div>
+        <div class="full"><label>Communication Address</label><input type="text" id="lo-address" value="${editing?(editing.address||''):''}"></div>
+        <div class="full"><label>Notes</label><textarea id="lo-notes">${editing?(editing.notes||''):''}</textarea></div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="lo-save">${editing?'Update':'Add Landowner'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="lo-cancel">Cancel</button>':''}
+      </div>
+    </div>
+  `;
+}
+
+function wireLandownersEvents(){
+  document.querySelectorAll('[data-lo-edit],[data-lo-open]').forEach(b=>b.onclick = () => { editingLandownerId = b.dataset.loEdit || b.dataset.loOpen; render(); });
+  document.querySelectorAll('[data-lo-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleLandowner(b.dataset.loToggle); render(); });
+  document.querySelectorAll('[data-lo-delete]').forEach(b=>b.onclick = async () => {
+    const linked = DB.getAllLandParcels().filter(p=>(p.landownerLinks||[]).some(l=>l.landownerId===b.dataset.loDelete));
+    const warn = linked.length ? (' This landowner is linked to '+linked.length+' land parcel(s) — their name will remain on those records, but the link will no longer resolve to a live Landowner entry.') : '';
+    if(!confirm('Delete this landowner permanently?' + warn + ' This cannot be undone.')) return;
+    await DB.deleteLandowner(b.dataset.loDelete);
+    if(editingLandownerId===b.dataset.loDelete) editingLandownerId=null;
+    render();
+  });
+  const saveBtn = document.getElementById('lo-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const fields = {
+      landownerCode: document.getElementById('lo-code').value,
+      fullName: document.getElementById('lo-name').value.trim(),
+      contactNumber: document.getElementById('lo-contact').value.trim(),
+      altContactNumber: document.getElementById('lo-alt-contact').value.trim(),
+      email: document.getElementById('lo-email').value.trim(),
+      district: document.getElementById('lo-district').value.trim(),
+      taluk: document.getElementById('lo-taluk').value.trim(),
+      village: document.getElementById('lo-village').value.trim(),
+      preferredContact: document.getElementById('lo-pref').value,
+      idDocRef: document.getElementById('lo-iddoc').value.trim(),
+      address: document.getElementById('lo-address').value.trim(),
+      notes: document.getElementById('lo-notes').value.trim(),
+    };
+    if(!fields.fullName){ alert('Full Name is required.'); return; }
+    if(!fields.contactNumber){ alert('Contact Number is required.'); return; }
+    const dupes = findDuplicateLandowners(fields, editingLandownerId);
+    if(dupes.length){
+      const list = dupes.map(d=>`${d.fullName} (${d.contactNumber||'no phone'}, ${d.village||'no village'})`).join('; ');
+      if(!confirm('This looks like it might be a duplicate of an existing landowner: ' + list + '. Save it anyway as a separate record?')) return;
+    }
+    if(editingLandownerId){ await DB.updateLandowner(editingLandownerId, fields); editingLandownerId=null; }
+    else { await DB.addLandowner(fields); }
+    render();
+  };
+  const cancelBtn = document.getElementById('lo-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingLandownerId=null; render(); };
+}
+
+// ---- LAND PARCEL & SURVEY REGISTRY (own module — Land Acquisition ERP,
+//      Module 4) -----------------------------------------------------------
+// Separate from a Lead on purpose (per spec): several leads, owners, or
+// negotiation rounds can all end up pointing at the same physical survey
+// number over time, so the parcel record outlives any one lead. A parcel
+// may optionally reference the Lead it came from (leadId) and one or more
+// Landowners with an ownership share each (landownerLinks) — both are
+// plain references to the other two registries, not copies of their data.
+function landownerOptionsHtml(selectedId){
+  const list = DB.getLandowners();
+  return `<option value="">— select a landowner —</option>` + list.map(o=>`<option value="${o.id}" ${selectedId===o.id?'selected':''}>${o.fullName} (${o.landownerCode||'no code'})</option>`).join('');
+}
+function leadOptionsHtml(selectedId){
+  const list = visibleLeads();
+  return `<option value="">— none / not linked to a lead —</option>` + list.map(l=>`<option value="${l.id}" ${selectedId===l.id?'selected':''}>${l.leadId} — ${l.village||'—'}${l.surveyNumber?(' — '+l.surveyNumber):''}</option>`).join('');
+}
+function extentUnitOptionsHtml(selectedUnit){
+  return Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}" ${k===selectedUnit?'selected':''}>${v.label}</option>`).join('');
+}
+// The linked-landowner rows and their share total are deliberately patched
+// in place (see wireLandParcelsEvents' add/remove handlers) rather than
+// triggering a full render() — a full re-render would rebuild every OTHER
+// field on this long form from scratch (village, survey number, extents,
+// …), discarding whatever the user had already typed into them, since only
+// parcelLandownerLinksDraft — not the rest of the form — survives across
+// renders. These two small helpers are shared by the initial render and by
+// that in-place patch, so both build the exact same markup.
+function pclLoRowsHtml(){
+  const draftLinks = parcelLandownerLinksDraft || [];
+  return draftLinks.map((l,i)=>`
+    <div class="field-pair" style="margin-bottom:6px;">
+      <span style="flex:1;">${l.landownerName} — ${l.ownershipSharePct!=null?l.ownershipSharePct:'?'}%</span>
+      <button type="button" class="icon-btn icon-del" data-pcl-lo-remove="${i}" title="Remove">🗑</button>
+    </div>`).join('') || '<p style="font-size:12px;color:var(--muted);">No landowners linked yet.</p>';
+}
+function pclShareTotal(){ return (parcelLandownerLinksDraft||[]).reduce((s,l)=>s+(Number(l.ownershipSharePct)||0),0); }
+function pclShareTotalText(total){
+  return `Share total: ${total}% ${total!==0 && total!==100 ? '— doesn\'t add up to 100% yet; fine if ownership shares aren\'t fully known yet, otherwise double-check.' : ''}`;
+}
+// Re-wires the remove button inside every landowner-link row — needed each
+// time #pcl-lo-rows' innerHTML is replaced, since that destroys whatever
+// listeners were attached to the old nodes.
+function wirePclLoRowButtons(){
+  document.querySelectorAll('[data-pcl-lo-remove]').forEach(b=>b.onclick = () => {
+    const i = parseInt(b.dataset.pclLoRemove, 10);
+    parcelLandownerLinksDraft = (parcelLandownerLinksDraft||[]).filter((_,idx)=>idx!==i);
+    document.getElementById('pcl-lo-rows').innerHTML = pclLoRowsHtml();
+    document.getElementById('pcl-lo-share-total').textContent = pclShareTotalText(pclShareTotal());
+    wirePclLoRowButtons();
+  });
+}
+function renderLandParcelsView(){
+  const items = DB.getAllLandParcels();
+  const editing = editingParcelId ? items.find(p=>p.id===editingParcelId) : null;
+  // Consumed once, then cleared — see pendingParcelPrefill's own comment.
+  const prefill = (!editing && pendingParcelPrefill) ? pendingParcelPrefill : null;
+  if(prefill) pendingParcelPrefill = null;
+  if(editing && parcelLandownerLinksDraft===null) parcelLandownerLinksDraft = (editing.landownerLinks||[]).slice();
+  if(!editing && parcelLandownerLinksDraft===null) parcelLandownerLinksDraft = prefill && prefill.landownerLinks ? prefill.landownerLinks.slice() : [];
+  const draftLinks = parcelLandownerLinksDraft || [];
+
+  const rows = items.map(p=>{
+    const balSqft = parcelBalanceSqft(p);
+    const lead = p.leadId ? DB.getLead(p.leadId) : null;
+    return `<tr>
+      <td class="clickable-row" data-pcl-open="${p.id}">${p.parcelCode||'—'}</td>
+      <td>${p.village||'—'}</td>
+      <td>${p.surveyNumber||'—'}${p.subdivisionNumber?('/'+p.subdivisionNumber):''}</td>
+      <td>${fmtNum(p.totalExtentValue)} ${EXTENT_UNITS[p.totalExtentUnit]?.label||''}</td>
+      <td style="${balSqft<-0.01?'color:var(--danger,#c0392b);font-weight:600;':''}">${fmtNum(sqftToUnit(balSqft, p.totalExtentUnit))} ${EXTENT_UNITS[p.totalExtentUnit]?.label||''}</td>
+      <td>${lead ? lead.leadId : '—'}</td>
+      <td><span class="badge badge-navy">${p.parcelStatus||'—'}</span></td>
+      <td>${p.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="master-actions">
+        <button class="icon-btn icon-ok" data-pcl-toggle="${p.id}" title="${p.active!==false?'Deactivate':'Activate'}">${p.active!==false?'✓':'○'}</button>
+        <button class="icon-btn icon-edit" data-pcl-edit="${p.id}" title="Edit">✎</button>
+        ${canDeleteLandRegistry() ? `<button class="icon-btn icon-del" data-pcl-delete="${p.id}" title="Delete permanently">🗑</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" class="empty">No land parcels yet.</td></tr>`;
+
+  const codeVal = editing ? (editing.parcelCode||'') : nextEntityCode('PCL', items, 'parcelCode', 4);
+  const f = editing || prefill || {};
+  const villages = DB.getMasters('villages');
+  const classes = DB.getMasters('landClasses');
+
+  const linkRows = pclLoRowsHtml();
+  const shareTotal = pclShareTotal();
+
+  return `
+    <div class="page-header"><h1>Land Parcels</h1></div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible company-wide, like Landowners — so a possible duplicate survey number is caught across branches. "Balance Available Extent" = Total Recorded − Previously Acquired − Proposed Acquisition; a negative balance (shown in red) means this parcel's own numbers over-allocate the land and must be corrected before saving.</p>
+    <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
+      <table>
+        <tr><th>Code</th><th>Village</th><th>Survey/Sub No.</th><th>Total Extent</th><th>Balance Extent</th><th>Linked Lead</th><th>Status</th><th>Record</th><th>Actions</th></tr>
+        ${rows}
+      </table>
+    </div>
+    <div class="card">
+      <h2 class="section-title" style="margin-top:0;">${editing?'Edit Land Parcel':'Add Land Parcel'}</h2>
+      ${prefill?'<p style="font-size:12px;color:var(--teal,#0a7d6f);">Pre-filled from the lead you came from — review and adjust before saving.</p>':''}
+      <div class="form-grid">
+        <div><label>Parcel ID</label><input type="text" id="pcl-code" value="${codeVal}" disabled title="Generated automatically — not editable"></div>
+        <div><label>Linked Lead</label><select id="pcl-lead">${leadOptionsHtml(f.leadId)}</select></div>
+        <div><label>Project / Business Reference</label><input type="text" id="pcl-project" value="${f.projectRef||''}" placeholder="Project Mapping module isn't built yet — free text for now"></div>
+        <div><label>District</label><input type="text" id="pcl-district" value="${f.district||''}"></div>
+        <div><label>Taluk</label><input type="text" id="pcl-taluk" value="${f.taluk||''}"></div>
+        <div><label>Village</label><select id="pcl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}" ${v.name===f.village?'selected':''}>${v.name}</option>`).join('')}</select></div>
+        <div><label>Revenue Village Code</label><input type="text" id="pcl-revcode" value="${f.revenueVillageCode||''}"></div>
+        <div><label>Survey Number *</label><input type="text" id="pcl-survey" value="${f.surveyNumber||''}"></div>
+        <div><label>Subdivision Number</label><input type="text" id="pcl-sub" value="${f.subdivisionNumber||''}"></div>
+        <div><label>Patta Number</label><input type="text" id="pcl-patta" value="${f.pattaNumber||''}"></div>
+        <div><label>Land Classification</label><select id="pcl-class">${classes.map(c=>`<option value="${c.label}" ${c.label===f.landClassification?'selected':''}>${c.label}</option>`).join('')}</select></div>
+        <div><label>Parcel Status</label><select id="pcl-status">${PARCEL_STATUSES.map(s=>`<option value="${s}" ${s===(f.parcelStatus||'Available')?'selected':''}>${s}</option>`).join('')}</select></div>
+        <div><label>Total Recorded Extent *</label><div class="field-pair"><input type="number" id="pcl-total-val" step="0.01" value="${f.totalExtentValue!=null?f.totalExtentValue:''}"><select id="pcl-total-unit">${extentUnitOptionsHtml(f.totalExtentUnit||'acre')}</select></div></div>
+        <div><label>Proposed Acquisition Extent</label><div class="field-pair"><input type="number" id="pcl-proposed-val" step="0.01" value="${f.proposedExtentValue!=null?f.proposedExtentValue:''}"><select id="pcl-proposed-unit">${extentUnitOptionsHtml(f.proposedExtentUnit||f.totalExtentUnit||'acre')}</select></div></div>
+        <div><label>Previously Acquired Extent</label><div class="field-pair"><input type="number" id="pcl-acquired-val" step="0.01" value="${f.previouslyAcquiredValue!=null?f.previouslyAcquiredValue:'0'}"><select id="pcl-acquired-unit">${extentUnitOptionsHtml(f.previouslyAcquiredUnit||f.totalExtentUnit||'acre')}</select></div></div>
+        <div><label>Access Road Details</label><input type="text" id="pcl-access" value="${f.accessRoad||''}"></div>
+        <div><label>Water Availability</label><select id="pcl-water">${YES_NO_PARTIAL.map(y=>`<option value="${y}" ${y===(f.waterAvailability||'')?'selected':''}>${y}</option>`).join('')}</select></div>
+        <div><label>Electricity Availability</label><select id="pcl-elec">${YES_NO_PARTIAL.map(y=>`<option value="${y}" ${y===(f.electricityAvailability||'')?'selected':''}>${y}</option>`).join('')}</select></div>
+        <div><label>Existing Structures</label><input type="text" id="pcl-structures" value="${f.existingStructures||''}"></div>
+        <div class="full"><label>Encroachment Information</label><input type="text" id="pcl-encroach" value="${f.encroachmentInfo||''}"></div>
+        <div><label>Boundary — North</label><input type="text" id="pcl-b-north" value="${f.boundaryNorth||''}"></div>
+        <div><label>Boundary — South</label><input type="text" id="pcl-b-south" value="${f.boundarySouth||''}"></div>
+        <div><label>Boundary — East</label><input type="text" id="pcl-b-east" value="${f.boundaryEast||''}"></div>
+        <div><label>Boundary — West</label><input type="text" id="pcl-b-west" value="${f.boundaryWest||''}"></div>
+        <div class="full"><label>Remarks</label><textarea id="pcl-remarks">${f.remarks||''}</textarea></div>
+      </div>
+      <h2 class="section-title">Landowner(s) / Ownership</h2>
+      <div id="pcl-lo-rows">${linkRows}</div>
+      <p id="pcl-lo-share-total" style="font-size:11.5px;color:var(--muted);">${pclShareTotalText(shareTotal)}</p>
+      <div class="form-grid">
+        <div><label>Add Landowner</label><select id="pcl-lo-add-select">${landownerOptionsHtml('')}</select></div>
+        <div><label>Ownership %</label><input type="number" id="pcl-lo-add-share" step="0.01" placeholder="e.g. 50"></div>
+      </div>
+      <div style="margin:8px 0;"><button type="button" class="btn btn-sm btn-ghost" id="pcl-lo-add-btn">+ Add Landowner to this Parcel</button></div>
+      <p style="font-size:11.5px;color:var(--muted);">Don't see the landowner you need? Add them on the <b>Landowners</b> page first, then come back here to link them.</p>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="pcl-save">${editing?'Update':'Add Parcel'}</button>
+        ${editing?'<button class="btn btn-sm btn-ghost" id="pcl-cancel">Cancel</button>':''}
+      </div>
+    </div>
+  `;
+}
+
+function wireLandParcelsEvents(){
+  document.querySelectorAll('[data-pcl-edit],[data-pcl-open]').forEach(b=>b.onclick = () => { editingParcelId = b.dataset.pclEdit || b.dataset.pclOpen; parcelLandownerLinksDraft = null; render(); });
+  document.querySelectorAll('[data-pcl-toggle]').forEach(b=>b.onclick = async () => { await DB.toggleLandParcel(b.dataset.pclToggle); render(); });
+  document.querySelectorAll('[data-pcl-delete]').forEach(b=>b.onclick = async () => {
+    if(!confirm('Delete this land parcel permanently? This cannot be undone.')) return;
+    await DB.deleteLandParcel(b.dataset.pclDelete);
+    if(editingParcelId===b.dataset.pclDelete){ editingParcelId=null; parcelLandownerLinksDraft=null; }
+    render();
+  });
+  const addLoBtn = document.getElementById('pcl-lo-add-btn');
+  if(addLoBtn) addLoBtn.onclick = () => {
+    const sel = document.getElementById('pcl-lo-add-select');
+    const loId = sel.value;
+    if(!loId){ alert('Select a landowner to add first.'); return; }
+    if((parcelLandownerLinksDraft||[]).some(l=>l.landownerId===loId)){ alert('That landowner is already linked to this parcel.'); return; }
+    const lo = landownerById(loId);
+    const shareInput = document.getElementById('pcl-lo-add-share');
+    const share = parseFloat(shareInput.value);
+    parcelLandownerLinksDraft = (parcelLandownerLinksDraft||[]).concat([{ landownerId: loId, landownerName: lo?lo.fullName:'', ownershipSharePct: isNaN(share)?null:share }]);
+    // Patch only the landowner-links block in place (see pclLoRowsHtml's own
+    // comment) — never a full render() here, so every other field the user
+    // has already typed into this long form stays exactly as they left it.
+    document.getElementById('pcl-lo-rows').innerHTML = pclLoRowsHtml();
+    document.getElementById('pcl-lo-share-total').textContent = pclShareTotalText(pclShareTotal());
+    wirePclLoRowButtons();
+    sel.value = ''; shareInput.value = '';
+  };
+  wirePclLoRowButtons();
+  const saveBtn = document.getElementById('pcl-save');
+  if(saveBtn) saveBtn.onclick = async () => {
+    const val = id => document.getElementById(id)?.value;
+    const fields = {
+      parcelCode: val('pcl-code'),
+      leadId: val('pcl-lead') || '',
+      projectRef: (val('pcl-project')||'').trim(),
+      district: (val('pcl-district')||'').trim(),
+      taluk: (val('pcl-taluk')||'').trim(),
+      village: (val('pcl-village')||'').trim(),
+      revenueVillageCode: (val('pcl-revcode')||'').trim(),
+      surveyNumber: (val('pcl-survey')||'').trim(),
+      subdivisionNumber: (val('pcl-sub')||'').trim(),
+      pattaNumber: (val('pcl-patta')||'').trim(),
+      landClassification: val('pcl-class') || '',
+      parcelStatus: val('pcl-status') || 'Available',
+      totalExtentValue: parseFloat(val('pcl-total-val')) || 0,
+      totalExtentUnit: val('pcl-total-unit'),
+      proposedExtentValue: parseFloat(val('pcl-proposed-val')) || 0,
+      proposedExtentUnit: val('pcl-proposed-unit'),
+      previouslyAcquiredValue: parseFloat(val('pcl-acquired-val')) || 0,
+      previouslyAcquiredUnit: val('pcl-acquired-unit'),
+      accessRoad: (val('pcl-access')||'').trim(),
+      waterAvailability: val('pcl-water') || '',
+      electricityAvailability: val('pcl-elec') || '',
+      existingStructures: (val('pcl-structures')||'').trim(),
+      encroachmentInfo: (val('pcl-encroach')||'').trim(),
+      boundaryNorth: (val('pcl-b-north')||'').trim(),
+      boundarySouth: (val('pcl-b-south')||'').trim(),
+      boundaryEast: (val('pcl-b-east')||'').trim(),
+      boundaryWest: (val('pcl-b-west')||'').trim(),
+      remarks: (val('pcl-remarks')||'').trim(),
+      landownerLinks: (parcelLandownerLinksDraft||[]).slice(),
+    };
+    if(!fields.surveyNumber){ alert('Survey Number is required.'); return; }
+    if(!fields.totalExtentValue){ alert('Total Recorded Extent is required.'); return; }
+    // Hard validation, not just a warning — per spec, this app must never
+    // silently allocate more land against a parcel than it actually has.
+    if(parcelBalanceSqft(fields) < -0.01){
+      alert('Previously Acquired + Proposed Acquisition Extent exceeds the Total Recorded Extent for this parcel. Correct the figures before saving.');
+      return;
+    }
+    const dupes = findDuplicateParcels(fields, editingParcelId);
+    if(dupes.length){
+      const list = dupes.map(d=>d.parcelCode+' ('+d.village+' '+d.surveyNumber+(d.subdivisionNumber?('/'+d.subdivisionNumber):'')+')').join('; ');
+      if(!confirm('This Village + Survey Number + Subdivision Number matches an existing parcel: ' + list + '. Save this as a separate parcel anyway?')) return;
+    }
+    if(editingParcelId){ await DB.updateLandParcel(editingParcelId, fields); editingParcelId=null; }
+    else { await DB.addLandParcel(fields); }
+    parcelLandownerLinksDraft = null;
+    render();
+  };
+  const cancelBtn = document.getElementById('pcl-cancel');
+  if(cancelBtn) cancelBtn.onclick = () => { editingParcelId=null; parcelLandownerLinksDraft=null; render(); };
+}
+
 // ---- WORKFLOW CONFIG (own module) -----------------------------------------
 // Which role must approve a specific From Status -> To Status transition.
 // Each gate applies only to that exact pair and direction — moving forward
@@ -2912,6 +3471,8 @@ function renderDetailModal(id){
         <div class="modal-body" id="detail-tab-body" style="max-height:70vh;overflow-y:auto;">
           <h2 class="section-title" style="margin-top:0;">Overview</h2>
           ${renderOverviewTab(l)}
+          <h2 class="section-title">Land Parcels</h2>
+          ${renderParcelsTab(l)}
           <h2 class="section-title">Stage &amp; Actions</h2>
           ${renderStageTab(l)}
           <h2 class="section-title">Feasibility</h2>
@@ -2934,6 +3495,33 @@ function renderDetailModal(id){
   document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
 
   wireDetailTabEvents(l);
+}
+
+// Read-only summary of whichever Land Parcel record(s) reference this lead
+// (p.leadId === l.id) — looked up live from the Land Parcels registry each
+// time, never duplicated onto the lead itself, so it can never drift out of
+// sync with the real parcel record. "+ Add Parcel for this Lead" jumps to
+// the Land Parcels page with a new, pre-filled form (see
+// pendingParcelPrefill) rather than requiring the village/survey/extent to
+// be retyped from scratch.
+function renderParcelsTab(l){
+  const parcels = DB.getAllLandParcels().filter(p=>p.leadId===l.id);
+  const canAdd = canAccessView('landParcels');
+  const rows = parcels.map(p=>{
+    const balSqft = parcelBalanceSqft(p);
+    return `<div class="form-grid" style="margin-bottom:8px;border-bottom:1px solid var(--line,#e4e7ec);padding-bottom:8px;">
+      <div><label>Parcel</label><div>${p.parcelCode} <span style="color:var(--muted)">(${p.active!==false?'Active':'Inactive'})</span></div></div>
+      <div><label>Survey / Sub No.</label><div>${p.surveyNumber||'—'}${p.subdivisionNumber?('/'+p.subdivisionNumber):''}</div></div>
+      <div><label>Total Extent</label><div>${fmtNum(p.totalExtentValue)} ${EXTENT_UNITS[p.totalExtentUnit]?.label||''}</div></div>
+      <div><label>Balance Extent</label><div style="${balSqft<-0.01?'color:var(--danger,#c0392b);font-weight:600;':''}">${fmtNum(sqftToUnit(balSqft,p.totalExtentUnit))} ${EXTENT_UNITS[p.totalExtentUnit]?.label||''}</div></div>
+      <div><label>Status</label><div><span class="badge badge-navy">${p.parcelStatus||'—'}</span></div></div>
+      <div><label>Landowner(s)</label><div>${(p.landownerLinks||[]).map(x=>x.landownerName+(x.ownershipSharePct!=null?(' ('+x.ownershipSharePct+'%)'):'')).join(', ')||'—'}</div></div>
+    </div>`;
+  }).join('') || '<p class="empty">No land parcel linked to this lead yet.</p>';
+  return `
+    ${rows}
+    ${canAdd ? `<button class="btn btn-sm btn-ghost" id="parcels-tab-add-btn">+ Add Parcel for this Lead</button>` : ''}
+  `;
 }
 
 function renderOverviewTab(l){
@@ -2962,7 +3550,7 @@ function renderOverviewTab(l){
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
-        <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'} <span style="color:var(--muted);font-size:11.5px;">(not changed here)</span></div></div>
+        <div><label>Assigned Executive</label><input type="text" value="${l.assignedExecutive||'—'}" disabled title="Assigned Executive isn't changed from this form."></div>
         <div><label>Village Name</label><select id="ov-e-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}" ${v.name===l.village?'selected':''}>${v.name}</option>`).join('')}</select></div>
         <div><label>Site Location</label><input type="text" id="ov-e-loc" value="${l.siteLocation||''}"></div>
         <div><label>Survey Number</label><input type="text" id="ov-e-survey" value="${l.surveyNumber||''}"></div>
@@ -3219,6 +3807,20 @@ function wireDetailTabEvents(l){
     };
   }
   {
+    const addParcelBtn = document.getElementById('parcels-tab-add-btn');
+    if(addParcelBtn) addParcelBtn.onclick = () => {
+      pendingParcelPrefill = {
+        leadId: l.id, village: l.village, surveyNumber: l.surveyNumber,
+        landClassification: l.landClassification,
+        totalExtentValue: l.extentValue, totalExtentUnit: l.extentUnit,
+      };
+      editingParcelId = null; parcelLandownerLinksDraft = null;
+      closeModal();
+      currentView = 'landParcels';
+      render();
+    };
+  }
+  {
     const editBtn = document.getElementById('ov-edit-details');
     if(editBtn) editBtn.onclick = () => { leadEditMode = true; renderDetailModal(l.id); };
     const cancelBtn = document.getElementById('ov-cancel-details');
@@ -3403,6 +4005,8 @@ function wireViewEvents(){
   if(currentView==='reports'){ wireReportsEvents(); }
   if(currentView==='configure'){ wireConfigureEvents(); }
   if(currentView==='masters'){ wireMastersEvents(); }
+  if(currentView==='landowners'){ wireLandownersEvents(); }
+  if(currentView==='landParcels'){ wireLandParcelsEvents(); }
   if(currentView==='users'){ wireUsersEvents(); }
   if(currentView==='workflow'){ wireWorkflowEvents(); }
   if(currentView==='statusConfig'){ wireStatusConfigEvents(); }
@@ -3420,6 +4024,8 @@ function wireSidebarNav(){
         if(b.dataset.view==='workflow'){ workflowDraftRows = null; workflowAddRole = null; workflowAddFrom = null; workflowAddTo = null; } // discard any unsaved draft on fresh entry
         if(b.dataset.view==='statusConfig') statusDraftRows = null;
         if(b.dataset.view==='pageAccess'){ pageAccessDraftRows = null; pageAccessSelectedUserUid = ''; userOverrideDraftRows = null; }
+        if(b.dataset.view==='landowners'){ editingLandownerId = null; }
+        if(b.dataset.view==='landParcels'){ editingParcelId = null; parcelLandownerLinksDraft = null; pendingParcelPrefill = null; }
         currentView = b.dataset.view;
         render();
       }
