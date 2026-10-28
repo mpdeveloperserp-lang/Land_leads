@@ -960,10 +960,14 @@ class MemoryDB {
   // Reassignment — every check here is re-run regardless of what the UI
   // already filtered, so a direct call can never bypass role/active-user
   // enforcement (see canReassignLead()/eligibleReassignmentTargets()
-  // above). The destination Executive no longer has to report to the same
-  // Manager as the current one (widened per Sara's request — a lead can
-  // now cross branches), so the audit entry records BOTH the old and new
-  // Manager rather than assuming they're the same. Appends to
+  // above). A Manager/Head/Admin's destination Executive no longer has to
+  // report to the same Manager as the current one (widened per Sara's
+  // request — a lead can now cross branches), so the audit entry records
+  // BOTH the old and new Manager rather than assuming they're the same.
+  // An Executive actor, though, IS still restricted to a same-Manager
+  // destination (Sara's explicit, narrower choice when reassignment was
+  // extended down to Executives) — re-checked here, not just in
+  // eligibleReassignmentTargets()'s dropdown filtering. Appends to
   // reassignmentHistory — never trims or overwrites it — and changes ONLY
   // assignedExecutive on the SAME lead document; nothing else about the
   // lead (status stays Frozen/On Hold, stageHistory/documents/etc.
@@ -975,6 +979,7 @@ class MemoryDB {
     const currentExec = userByName(lead.assignedExecutive);
     const newExec = userByName(newExecutiveName);
     if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
+    if(currentUser.role==='executive' && newExec.reportsTo !== currentUser.reportsTo) throw new Error('As an Executive you can only reassign within your own team.');
     const fromManager = currentExec ? userByUid(currentExec.reportsTo) : null;
     const toManager = userByUid(newExec.reportsTo);
     const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
@@ -1284,12 +1289,15 @@ class FirestoreDB {
   // Same validation as MemoryDB.reassignLead() (see its comment), run
   // inside a Firestore transaction so a concurrent change to this exact
   // lead — someone else resuming it from hold, or reassigning it, at the
-  // same moment — can't race past the "still Frozen" / role checks. The
-  // destination Executive no longer has to report to the same Manager as
-  // the current one (widened per Sara's request — a lead can now cross
-  // branches), so the audit entry records BOTH the old and new Manager.
-  // Note serverTimestamp() isn't usable INSIDE an array element, so the
-  // audit entry's own timestamp is a plain ISO string (same as every other
+  // same moment — can't race past the "still Frozen" / role checks. A
+  // Manager/Head/Admin's destination Executive no longer has to report to
+  // the same Manager as the current one (widened per Sara's request — a
+  // lead can now cross branches), so the audit entry records BOTH the old
+  // and new Manager. An Executive actor is still restricted to a
+  // same-Manager destination (Sara's narrower choice when reassignment was
+  // extended down to Executives) — re-checked here too. Note
+  // serverTimestamp() isn't usable INSIDE an array element, so the audit
+  // entry's own timestamp is a plain ISO string (same as every other
   // history entry already stored on a lead); only the document-level
   // updatedAt uses the real server clock.
   async reassignLead(leadId, newExecutiveName, remarks){
@@ -1303,6 +1311,7 @@ class FirestoreDB {
       const currentExec = userByName(lead.assignedExecutive);
       const newExec = userByName(newExecutiveName);
       if(!newExec || newExec.role!=='executive' || newExec.active===false) throw new Error('That Executive is not an eligible, active Executive.');
+      if(currentUser.role==='executive' && newExec.reportsTo !== currentUser.reportsTo) throw new Error('As an Executive you can only reassign within your own team.');
       const fromManager = currentExec ? userByUid(currentExec.reportsTo) : null;
       const toManager = userByUid(newExec.reportsTo);
       const statusLabel = (lead.onHold && lead.onHold.active) ? 'Frozen' : 'Active';
@@ -1467,14 +1476,20 @@ let reassignMode = false;
 // Head's permission as scoped to "the relevant Manager's team", so this
 // mirrors visibleLeads()'s own branch-scoping instead of the usual Head-
 // always-wins shortcut); Admin (sysadmin), unconditionally, same full-
-// access precedent as everywhere else. An Executive is never authorized to
-// reassign — no existing business rule grants it — so they never see the
-// option at all, regardless of whose lead it is.
+// access precedent as everywhere else. An Executive IS now authorized too
+// (Sara's explicit follow-up request: "reassign executives I want in
+// executive level also"), but narrower than every role above it, matching
+// this app's existing narrower-than-Executive-tiers-above precedent in
+// reverse: an Executive may only reassign a lead currently assigned to
+// THEMSELVES or to a teammate under the same Manager — the same
+// isTeammateOf() reach visibleLeads() already grants an Executive on every
+// other page, not a company-wide reach.
 function canReassignLead(lead){
   if(!currentUser || !lead) return false;
   if(currentUser.role==='sysadmin') return true;
   if(currentUser.role==='admin') return isInHeadBranch(currentUser.uid, lead.assignedExecutive) || hasOrphanedManagerChain(lead.assignedExecutive);
   if(currentUser.role==='manager') return isDirectReport(currentUser.uid, lead.assignedExecutive);
+  if(currentUser.role==='executive') return isTeammateOf(currentUser, lead.assignedExecutive);
   return false;
 }
 // Every ACTIVE Executive company-wide — never the current Executive
@@ -1484,11 +1499,22 @@ function canReassignLead(lead){
 // lead to an Executive on another team. canReassignLead() above still
 // gates WHICH LEADS a given user may touch at all (a Manager only their
 // own reports' leads, a Head only their own branch's) — this only widens
-// the destination pool once that gate has already passed. Enforced here
-// (not just in whichever dropdown renders it) so this same check also
-// guards the actual save in DB.reassignLead() below.
+// the destination pool once that gate has already passed.
+// An Executive gets a DELIBERATELY NARROWER destination pool than every
+// role above them (Sara's explicit choice when this was extended to
+// Executives): same-Manager teammates only, not company-wide — scoped off
+// the ACTING user's own Manager (currentUser.reportsTo), since the lead
+// could already be the acting Executive's own (current===currentUser) or a
+// teammate's, but either way "same Manager" means the same Manager as the
+// person doing the reassigning.
+// Enforced here (not just in whichever dropdown renders it) so this same
+// check also guards the actual save in DB.reassignLead() below.
 function eligibleReassignmentTargets(lead){
   const current = userByName(lead && lead.assignedExecutive);
+  if(currentUser && currentUser.role==='executive'){
+    if(!currentUser.reportsTo) return [];
+    return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && u.reportsTo===currentUser.reportsTo && (!current || u.name!==current.name));
+  }
   return DB.getUsers().filter(u => u.role==='executive' && u.active!==false && (!current || u.name!==current.name));
 }
 
@@ -4411,12 +4437,13 @@ function renderStageTab(l){
   // "Reassign Executive" — available on ANY lead (widened from the
   // original Frozen-On-Hold-only scope, see canReassignLead()'s own
   // comment), to whoever canReassignLead() allows (Manager/Head within
-  // their own team, Admin always; never an Executive). The dropdown is
-  // pre-scoped to eligibleReassignmentTargets(), but DB.reassignLead()
-  // re-validates everything itself too — the dropdown's filtering is a
-  // convenience, not the actual enforcement. The target pool is now
-  // company-wide (widened per Sara's request), so each option is labeled
-  // with that Executive's own Manager, since it's no longer implied to be
+  // their own team, Admin always; an Executive too, but only on their own
+  // or a teammate's lead). The dropdown is pre-scoped to
+  // eligibleReassignmentTargets(), but DB.reassignLead() re-validates
+  // everything itself too — the dropdown's filtering is a convenience, not
+  // the actual enforcement. The target pool is company-wide for
+  // Manager/Head/Admin (widened per Sara's request), so each option is
+  // labeled with that Executive's own Manager, since it's no longer implied to be
   // the same Manager as the current assignee.
   const canReassign = canReassignLead(l);
   const reassignTargets = canReassign ? eligibleReassignmentTargets(l) : [];
