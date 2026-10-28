@@ -196,7 +196,6 @@
     </div>
     <nav id="tabs">
       <button data-view="dashboard" class="active">Dashboard</button>
-      <button data-view="progress" id="nav-progress-btn">Progress Details</button>
       <button data-view="list">All Leads</button>
       <button data-view="reports">Reports</button>
       <button data-view="analytics">MIS Analytics</button>
@@ -304,7 +303,13 @@ function refreshStagesFromDB(){
 // drive every existing Lead extent/price field exactly as before.
 const EXTENT_UNITS = { acre:{label:'Acre',sqft:43560}, ground:{label:'Ground',sqft:2400}, cent:{label:'Cent',sqft:435.6}, sqft:{label:'Sqft',sqft:1}, hectare:{label:'Hectare',sqft:107639.1}, sqm:{label:'Sq. Metre',sqft:10.7639} };
 const FEAS_STATUSES = ['Not Started','In Progress','Cleared','Failed'];
-const PAGE_TITLES = { dashboard:'Dashboard', progress:'Progress Details', list:'All Leads', newLead:'New Land Lead', reports:'Reports', analytics:'MIS Analytics', configure:'Configure — Lead Fields', masters:'Masters', channelPartners:'Channel Partners', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access', auditTrail:'Audit Trail' };
+// Progress Details and All Leads were two separate pages built on the exact
+// same leadMatchesFilters()/visibleLeads() logic, just with different
+// columns and toolbars — merged into one page (Sara's explicit request:
+// "All leads and Progress details is two different pages and output is
+// same combine and provide as single page with logic"). 'list' (All Leads)
+// is the surviving page/title; 'progress' no longer exists as its own view.
+const PAGE_TITLES = { dashboard:'Dashboard', list:'All Leads', newLead:'New Land Lead', reports:'Reports', analytics:'MIS Analytics', configure:'Configure — Lead Fields', masters:'Masters', channelPartners:'Channel Partners', landowners:'Landowners', landParcels:'Land Parcels', users:'Manage Users', workflow:'Workflow Config', statusConfig:'Status Config', pageAccess:'Page Access', auditTrail:'Audit Trail' };
 const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 
 // ---- Roles & access ------------------------------------------------------
@@ -335,7 +340,6 @@ const ROLE_RANK = { executive:1, manager:2, admin:3, sysadmin:0 };
 // which LEADS a Manager/Head/Executive sees regardless of what's set here.
 const DEFAULT_VIEW_ACCESS = {
   dashboard: ['admin','manager','executive'],
-  progress:  ['admin','manager','executive'],
   list:      ['admin','manager','executive'],
   newLead:   ['admin','manager','executive'],
   reports:   ['admin','manager'],
@@ -385,6 +389,14 @@ let VIEW_ACCESS = Object.fromEntries(Object.entries(DEFAULT_VIEW_ACCESS).map(([k
 let USER_PAGE_OVERRIDES = {};
 function canAccessView(view){
   if(!currentUser) return false;
+  // Lead Details isn't a navigable "page" with its own role grid in Page
+  // Access — it's a universal drill-through reached only from other pages
+  // the user already had to pass this same check to reach, and real access
+  // is enforced at the data layer by openLeadDetail()'s own visibleLeads()
+  // guard. So it's deliberately left out of PAGE_TITLES/KNOWN_VIEWS (never
+  // shows up as a configurable row on the Page Access screen) and always
+  // allowed here.
+  if(view==='leadDetail') return true;
   // Head ('admin') always has full access and can never be locked out — via
   // the role grid (force-included below) or an override, same "always
   // allowed" precedent as Workflow Config gates.
@@ -499,8 +511,8 @@ function visibleLeads(){
   return all;
 }
 // Same tree, applied to the Executive accounts themselves — used to scope
-// the "Assigned Executive" dropdown/filter on New Lead, Progress Details
-// and All Leads so a Manager/Head only sees executives in their own branch.
+// the "Assigned Executive" dropdown/filter on New Lead and All Leads so a
+// Manager/Head only sees executives in their own branch.
 // For an Executive this now lists their whole team (same isTeammateOf()
 // widening as visibleLeads(), so the filter dropdown offers exactly the
 // people whose leads actually show up in the table) — the New Lead page's
@@ -1491,9 +1503,15 @@ class FirestoreDB {
 // ---- Boot: pick MemoryDB or FirestoreDB, then render --------------------
 let DB = null;
 let currentDetailLeadId = null;
-// Whether the lead detail modal's Overview tab is showing its editable form
+// Which currentView to return to when the Lead Details page's Back button
+// is clicked — Lead Details is its own dedicated page now (not a popup),
+// reachable from several different pages (All Leads, Dashboard, Reports,
+// Channel Partner Details, …), so it remembers whichever one sent it here.
+// Set by openLeadDetail(), consumed and cleared by closeLeadDetail().
+let previousView = null;
+// Whether the Lead Details page's Overview tab is showing its editable form
 // right now. Reset to false whenever a (possibly different) lead is opened
-// or the modal is closed, so stale edit state never leaks from one lead to
+// or the page is closed, so stale edit state never leaks from one lead to
 // the next. Who can actually SEE the Edit option at all is gated separately
 // by canModifyLeadDetails() below.
 let leadEditMode = false;
@@ -1828,8 +1846,10 @@ async function boot(){
         refreshWorkflowFromDB();
         refreshViewAccessFromDB();
         refreshUserPageOverridesFromDB();
+        // Lead Details is a regular currentView page now (not a separate
+        // modal root), so the render() call above already keeps it live —
+        // no second, modal-specific re-render needed here any more.
         if(currentUser){ applyRoleVisibility(); render(); }
-        if(currentDetailLeadId && document.getElementById('overlay')) renderDetailModal(currentDetailLeadId);
       });
       // DB.init() (seeding + Firestore listeners) is deliberately NOT called
       // here. Security rules that require request.auth != null (the live
@@ -2161,9 +2181,6 @@ let parcelLandownerLinksDraft = null;
 // form, so the new parcel starts pre-filled from that lead's own fields
 // instead of needing everything retyped.
 let pendingParcelPrefill = null;
-// Progress Details is one page with its own Status/Source/Channel
-// Partner/Executive/Date filter panel and a single results table.
-let progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' };
 let auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' };
 // ---- Browser Back/Forward support ------------------------------------
 // Every top-level view change pushes a history entry (#dashboard, #list, …)
@@ -2174,11 +2191,15 @@ let suppressHistoryPush = false;
 
 function render(){
   if(!canAccessView(currentView)) currentView = 'dashboard';
-  document.querySelectorAll('#tabs > button[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===currentView));
-  document.getElementById('page-title').textContent = PAGE_TITLES[currentView] || '';
+  // Lead Details has no nav button of its own (it's a drill-through, not a
+  // page in the sidebar) — while it's open, keep whichever page sent us
+  // here highlighted, so the sidebar never goes dark.
+  const navHighlightView = currentView==='leadDetail' ? (previousView||'') : currentView;
+  document.querySelectorAll('#tabs > button[data-view]').forEach(b=>b.classList.toggle('active', b.dataset.view===navHighlightView));
+  document.getElementById('page-title').textContent = currentView==='leadDetail' ? 'Lead Details' : (PAGE_TITLES[currentView] || '');
   const root = document.getElementById('view-root');
   if(currentView==='dashboard') root.innerHTML = renderDashboard();
-  else if(currentView==='progress') root.innerHTML = renderProgress();
+  else if(currentView==='leadDetail') root.innerHTML = renderLeadDetailPage();
   else if(currentView==='list') root.innerHTML = renderList();
   else if(currentView==='newLead') root.innerHTML = renderNewLeadView();
   else if(currentView==='reports') root.innerHTML = renderReports();
@@ -2218,12 +2239,12 @@ function goToNewLead(){
   currentView = 'newLead';
   render();
 }
-// Jump to the Progress Details page, optionally pre-filtered to one status
-// (e.g. from a dashboard funnel-row click).
+// Jump to the All Leads page, optionally pre-filtered to one status
+// (e.g. from a dashboard funnel-row click). All Leads and Progress Details
+// were merged into a single page, so this now just delegates to
+// goToLeadsList() with a stage filter pre-applied.
 function goToProgress(stageKey){
-  progressFilters = Object.assign({ stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' }, stageKey ? { stage: stageKey } : {});
-  currentView = 'progress';
-  render();
+  goToLeadsList(stageKey ? { stage: stageKey } : {});
 }
 // Lookup of the Configure page's per-field settings, by field key.
 function fieldConfigMap(){
@@ -2813,71 +2834,14 @@ function wireAnalyticsEvents(){
   const fp = document.getElementById('an-fin-pdf');   if(fp) fp.onclick = () => exportRowsPDF(financialSummaryRows(), 'Financial_Summary.pdf', 'Financial Summary');
 }
 
-// ---- PROGRESS DETAILS (one page, one filtered table — like IN4Suite's
-//      Land Approval screen: a Status filter plus a single results table) ---
-function renderProgress(){
-  const sources = DB.getMasters('leadSources');
-  const cps = visibleChannelPartners();
-  const execs = visibleExecutives();
-  const activeFilters = Object.assign({}, DEFAULT_FILTERS, progressFilters);
-  const leads = visibleLeads().filter(l=>leadMatchesFilters(l, activeFilters));
-
-  const rows = leads.map(l=>{
-    const call = callBadgeInfo(l);
-    const followUp = (l.onHold && l.onHold.active)
-      ? '<span class="badge badge-warn">On Hold</span>'
-      : (call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—');
-    return `<tr>
-      <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
-      <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
-      <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
-      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
-      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
-      <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
-      <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
-      <td class="clickable-row" data-id="${l.id}">${followUp}</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="8" class="empty">No leads match these filters</td></tr>`;
-
-  return `
-    <div class="page-header"><h1>Progress Details</h1></div>
-    <div class="card filter-panel">
-      <div class="form-grid">
-        <div><label>Status</label><select id="pf-stage">
-          <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${progressFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
-        </select></div>
-        <div><label>Lead Source</label><select id="pf-source"><option value="">All sources</option>${sources.map(s=>`<option value="${s.label}" ${progressFilters.source===s.label?'selected':''}>${s.label}</option>`).join('')}</select></div>
-        <div><label>Channel Partner</label><select id="pf-cp"><option value="">All partners</option>${cps.map(c=>`<option value="${c.code}" ${progressFilters.channelPartner===c.code?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
-        <div><label>Assigned Executive</label><select id="pf-exec"><option value="">All executives</option>${execs.map(e=>`<option value="${e.name}" ${progressFilters.exec===e.name?'selected':''}>${e.name}</option>`).join('')}</select></div>
-        <div><label>Lead Date From</label><input type="date" id="pf-datefrom" value="${progressFilters.dateFrom}"></div>
-        <div><label>Lead Date To</label><input type="date" id="pf-dateto" value="${progressFilters.dateTo}"></div>
-      </div>
-      <div class="filter-actions">
-        <button class="btn btn-sm btn-ghost" id="pf-clear">Clear Filters</button>
-        <button class="btn btn-sm btn-teal" id="pf-go">Go</button>
-      </div>
-    </div>
-    <div class="card" style="padding:0;overflow-x:auto;">
-      <table>
-        <tr><th>Lead ID</th><th>Village</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Source</th><th>Executive</th><th>Follow-up</th></tr>
-        ${rows}
-      </table>
-    </div>
-  `;
-}
-function wireProgressEvents(){
-  document.querySelectorAll('#view-root td.clickable-row').forEach(td=>td.addEventListener('click', ()=>openLeadDetail(td.dataset.id)));
-  const val = id => (document.getElementById(id)?.value || '').trim();
-  const goBtn = document.getElementById('pf-go');
-  if(goBtn) goBtn.onclick = () => {
-    progressFilters = { stage: val('pf-stage'), source: val('pf-source'), channelPartner: val('pf-cp'), exec: val('pf-exec'), dateFrom: val('pf-datefrom'), dateTo: val('pf-dateto') };
-    render();
-  };
-  const clearBtn = document.getElementById('pf-clear');
-  if(clearBtn) clearBtn.onclick = () => { progressFilters = { stage:'', source:'', channelPartner:'', exec:'', dateFrom:'', dateTo:'' }; render(); };
-}
-
 // ---- ALL LEADS LIST (dense ERP-style table page) --------------------------
+// NOTE: this page used to have a separate twin, "Progress Details"
+// (renderProgress()/wireProgressEvents()), built on the exact same
+// leadMatchesFilters() logic underneath a different toolbar/column set.
+// They've been merged into this single page: this list keeps its own full
+// toolset (search, A-Z index, pagination, bulk-select/export, + Create New
+// Lead) and has gained Progress's Status filter and Status/Follow-up
+// columns. "Progress Details" no longer exists as its own nav entry.
 function renderList(){
   const sources = DB.getMasters('leadSources');
   const cps = visibleChannelPartners();
@@ -2894,19 +2858,28 @@ function renderList(){
 
   const rows = pageItems.map(l=>{
     const checked = selectedLeadIds.has(l.id) ? 'checked' : '';
+    // Status + Follow-up columns, ported in from the old standalone
+    // Progress Details page (now merged into this one — see the
+    // "ALL LEADS + PROGRESS DETAILS MERGE" note above renderList()).
+    const call = callBadgeInfo(l);
+    const followUp = (l.onHold && l.onHold.active)
+      ? '<span class="badge badge-warn">On Hold</span>'
+      : (call ? `<span class="badge badge-${call.type==='danger'?'danger':call.type==='warn'?'warn':'muted'}">${call.text}</span>` : '—');
     return `<tr>
       <td><input type="checkbox" class="row-check" data-id="${l.id}" ${checked}></td>
       <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
       <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.surveyNumber||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
       <td class="clickable-row" data-id="${l.id}">${l.landownerName||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${followUp}</td>
       <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" class="empty">No leads match these filters</td></tr>`;
+  }).join('') || `<tr><td colspan="12" class="empty">No leads match these filters</td></tr>`;
 
   return `
     <div class="page-header">
@@ -2916,6 +2889,9 @@ function renderList(){
 
     <div class="card filter-panel">
       <div class="form-grid">
+        <div><label>Status</label><select id="lf-stage">
+          <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select></div>
         ${(!fcfg.leadSource || fcfg.leadSource.filter!==false) ? `<div><label>Lead Source</label><select id="lf-source">
           <option value="">All sources</option>${sources.map(s=>`<option value="${s.label}" ${listFilters.source===s.label?'selected':''}>${s.label}</option>`).join('')}
         </select></div>` : ''}
@@ -2951,7 +2927,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Survey No.</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Executive</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Survey No.</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Executive</th><th>Follow-up</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -2973,6 +2949,7 @@ function wireListEvents(){
   const val = id => (document.getElementById(id)?.value || '').trim();
   const goBtn = document.getElementById('lf-go');
   if(goBtn) goBtn.onclick = () => {
+    listFilters.stage = val('lf-stage');
     // Source/Channel Partner/Executive filters can be hidden via the Configure
     // page's Filter flag — only read them when actually rendered.
     if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
@@ -3377,11 +3354,33 @@ function renderCPDetailPage(){
   return `
     <div class="page-header"><h1>${cp.name || cp.code}</h1></div>
     <button class="btn btn-sm btn-ghost" id="cpd-back" style="margin-bottom:12px;">&larr; Back to Channel Partners</button>
-    <div class="card">
+    <div class="card" style="margin-bottom:20px;">
       <h2 class="section-title" style="margin-top:0;">${isEditing ? 'Modify Channel Partner' : 'Channel Partner Details'}</h2>
       ${isEditing ? editForm : readOnly}
     </div>
+    ${renderCPLeadsSection(cp)}
   `;
+}
+
+// Leads currently sourced by this Channel Partner — same branch-scoped
+// visibleLeads() every other page already uses, so seeing the leads list
+// here never bypasses Manager-wise lead visibility just because the
+// Channel Partner itself is visible. Sara's explicit follow-up: "it has to
+// show the leads details which the CP is involved" — each row opens that
+// lead's own detail view, same click-through every other leads list in
+// this app already uses.
+function renderCPLeadsSection(cp){
+  const leads = visibleLeads().filter(l=>l.channelPartnerCode===cp.code);
+  const rows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
+      <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
+      <td>${l.assignedExecutive||'—'}</td><td>${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label||''}</td>
+      <td>${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label||''}</td>
+    </tr>`).join('') || `<tr><td colspan="6" class="empty">No leads recorded against this Channel Partner yet.</td></tr>`;
+  return `
+    <h2 class="section-title">Leads Sourced by ${cp.name||cp.code} <span class="tag">${leads.length} lead${leads.length===1?'':'s'}</span></h2>
+    <div class="card" style="padding:0;overflow-x:auto;">
+      <table><tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Assigned Executive</th><th>Extent</th><th>Price</th></tr>${rows}</table>
+    </div>`;
 }
 
 function wireCPDetailEvents(){
@@ -3391,6 +3390,11 @@ function wireCPDetailEvents(){
 
   const cp = DB.getAllMasters('channelPartners').find(c=>c.id===cpDetailId);
   if(!cp) return;
+
+  // The "Leads Sourced by ..." table below the details card — wired
+  // regardless of view/edit mode, same openLeadDetail() click-through every
+  // other leads list in this app already uses.
+  document.querySelectorAll('#view-root tr.clickable-row[data-id]').forEach(tr=>tr.addEventListener('click', ()=>openLeadDetail(tr.dataset.id)));
 
   const modifyBtn = document.getElementById('cpd-modify');
   if(modifyBtn) modifyBtn.onclick = () => { editingCPId = cp.id; linkingCPOwnerId = null; render(); };
@@ -3970,7 +3974,7 @@ function renderWorkflowView(){
     </tr>`).join('');
   return `
     <div class="page-header"><h1>Workflow Config</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Role-wise From Status → To Status mapping — pick any From and any To status, including non-adjacent jumps. Each row grants one role permission to perform one specific move (see a lead's Stage &amp; Actions section under Progress Details): the immediate next/back stage stays available to everyone by default unless gated here, while any OTHER mapping shows up as an extra "Move to" option gated to just the role(s) listed. Head can always approve any move regardless of what's configured here.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Role-wise From Status → To Status mapping — pick any From and any To status, including non-adjacent jumps. Each row grants one role permission to perform one specific move (see a lead's Stage &amp; Actions section on its Lead Details page): the immediate next/back stage stays available to everyone by default unless gated here, while any OTHER mapping shows up as an extra "Move to" option gated to just the role(s) listed. Head can always approve any move regardless of what's configured here.</p>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table><tr><th></th><th>Application Role</th><th>From Status</th><th>To Status</th></tr>${rows || '<tr><td colspan="4" style="color:var(--muted);padding:14px;">No mappings configured — anyone with edit access can move a lead to any adjacent stage.</td></tr>'}</table>
     </div>
@@ -4379,7 +4383,7 @@ function renderConfigure(){
 
   return `
     <div class="page-header"><h1>Configure — Lead Fields</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Controls which fields appear on the New Lead form (Visible), which are required (Mandatory), and which show up as filters on All Leads / Progress Details (Filter).</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Controls which fields appear on the New Lead form (Visible), which are required (Mandatory), and which show up as filters on All Leads (Filter).</p>
     <div class="card" style="padding:0;overflow-x:auto;">
       <table>
         <tr><th>Field Name</th><th>Visible</th><th>Mandatory</th><th>Filter</th></tr>
@@ -4547,7 +4551,16 @@ function wireNewLeadViewEvents(){
   };
 }
 
-// ---- MODAL: Lead Detail --------------------------------------------------
+// ---- Lead Details — its own dedicated page (not a popup — Sara's explicit
+//      request: "When i click the leads it has to go to new dedicated page
+//      not a pop up"). Reached from many different pages (All Leads,
+//      Dashboard, Reports, Channel Partner Details, …), so it remembers
+//      whichever one sent it here (previousView) and returns there on
+//      Back, same "drill into a record, then come back" shape as every
+//      other full-page detail view in this app (see Channel Partner
+//      Details). Content and order are unchanged from the old popup — one
+//      long page, same tabs top to bottom, per Sara's choice to keep this
+//      a low-risk move rather than also redesigning it into tabs.
 function openLeadDetail(id){
   const l = DB.getLead(id);
   // Guards every role uniformly against opening a lead outside their branch
@@ -4559,56 +4572,64 @@ function openLeadDetail(id){
   leadEditMode = false; // opening a (possibly different) lead always starts in read-only view
   reassignMode = false;
   currentDetailLeadId = id;
-  renderDetailModal(id);
+  if(currentView !== 'leadDetail') previousView = currentView;
+  currentView = 'leadDetail';
+  render();
 }
 
-function renderDetailModal(id){
-  const l = DB.getLead(id);
-  if(!l){ closeModal(); return; }
+function closeLeadDetail(){
+  currentDetailLeadId = null;
+  leadEditMode = false;
+  reassignMode = false;
+  currentView = previousView || 'list';
+  previousView = null;
+  render();
+}
 
-  document.getElementById('modal-root').innerHTML = `
-    <div class="modal-overlay" id="overlay">
-      <div class="modal" style="max-width:820px;">
-        <div class="modal-head">
-          <h3>${l.leadId} — ${l.village||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h3>
-          <button class="x" id="close-x">&times;</button>
-        </div>
-        <div class="modal-body" id="detail-tab-body" style="max-height:70vh;overflow-y:auto;">
-          <h2 class="section-title" style="margin-top:0;">Overview</h2>
-          ${renderOverviewTab(l)}
-          <h2 class="section-title">Land Parcels</h2>
-          ${renderParcelsTab(l)}
-          <h2 class="section-title">Stage &amp; Actions</h2>
-          ${renderStageTab(l)}
-          <h2 class="section-title">Feasibility</h2>
-          ${renderFeasibilityTab(l)}
-          <h2 class="section-title">Documents</h2>
-          ${renderDocumentsTab(l)}
-          <h2 class="section-title">Legal Verification</h2>
-          ${renderLegalVerificationTab(l)}
-          <h2 class="section-title">Negotiation</h2>
-          ${renderNegotiationTab(l)}
-          <h2 class="section-title">Valuation</h2>
-          ${renderValuationTab(l)}
-          <h2 class="section-title">Acquisition Proposal</h2>
-          ${renderAcquisitionProposalTab(l)}
-          <h2 class="section-title">Payments</h2>
-          ${renderPaymentsTab(l)}
-          <h2 class="section-title">Registration</h2>
-          ${renderRegistrationTab(l)}
-          <h2 class="section-title">History</h2>
-          ${renderHistoryTab(l)}
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" id="close-x2">Close</button>
-        </div>
-      </div>
+function renderLeadDetailPage(){
+  const l = DB.getLead(currentDetailLeadId);
+  if(!l){
+    return `
+      <div class="page-header"><h1>Lead Details</h1></div>
+      <button class="btn btn-sm btn-ghost" id="ld-back" style="margin-bottom:12px;">&larr; Back</button>
+      <div class="card"><p>This lead could not be found — it may have been deleted, or is outside what you can access.</p></div>`;
+  }
+  return `
+    <div class="page-header"><h1>${l.leadId} — ${l.village||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h1></div>
+    <button class="btn btn-sm btn-ghost" id="ld-back" style="margin-bottom:12px;">&larr; Back</button>
+    <div class="card" id="detail-tab-body">
+      <h2 class="section-title" style="margin-top:0;">Overview</h2>
+      ${renderOverviewTab(l)}
+      <h2 class="section-title">Land Parcels</h2>
+      ${renderParcelsTab(l)}
+      <h2 class="section-title">Stage &amp; Actions</h2>
+      ${renderStageTab(l)}
+      <h2 class="section-title">Feasibility</h2>
+      ${renderFeasibilityTab(l)}
+      <h2 class="section-title">Documents</h2>
+      ${renderDocumentsTab(l)}
+      <h2 class="section-title">Legal Verification</h2>
+      ${renderLegalVerificationTab(l)}
+      <h2 class="section-title">Negotiation</h2>
+      ${renderNegotiationTab(l)}
+      <h2 class="section-title">Valuation</h2>
+      ${renderValuationTab(l)}
+      <h2 class="section-title">Acquisition Proposal</h2>
+      ${renderAcquisitionProposalTab(l)}
+      <h2 class="section-title">Payments</h2>
+      ${renderPaymentsTab(l)}
+      <h2 class="section-title">Registration</h2>
+      ${renderRegistrationTab(l)}
+      <h2 class="section-title">History</h2>
+      ${renderHistoryTab(l)}
     </div>`;
+}
 
-  document.getElementById('close-x').onclick = closeModal;
-  document.getElementById('close-x2').onclick = closeModal;
-  document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
-
+function wireLeadDetailViewEvents(){
+  const backBtn = document.getElementById('ld-back');
+  if(backBtn) backBtn.onclick = closeLeadDetail;
+  const l = DB.getLead(currentDetailLeadId);
+  if(!l) return;
   wireDetailTabEvents(l);
 }
 
@@ -5273,7 +5294,7 @@ function wireDetailTabEvents(l){
     const btn = document.getElementById('ov-save-call');
     if(btn) btn.onclick = async () => {
       await DB.updateLead(l.id, { nextCallDate: document.getElementById('ov-nextcall').value });
-      renderDetailModal(l.id); render();
+      render();
     };
   }
   {
@@ -5285,16 +5306,16 @@ function wireDetailTabEvents(l){
         totalExtentValue: l.extentValue, totalExtentUnit: l.extentUnit,
       };
       editingParcelId = null; parcelLandownerLinksDraft = null;
-      closeModal();
+      currentDetailLeadId = null; leadEditMode = false; reassignMode = false;
       currentView = 'landParcels';
       render();
     };
   }
   {
     const editBtn = document.getElementById('ov-edit-details');
-    if(editBtn) editBtn.onclick = () => { leadEditMode = true; renderDetailModal(l.id); };
+    if(editBtn) editBtn.onclick = () => { leadEditMode = true; render(); };
     const cancelBtn = document.getElementById('ov-cancel-details');
-    if(cancelBtn) cancelBtn.onclick = () => { leadEditMode = false; renderDetailModal(l.id); };
+    if(cancelBtn) cancelBtn.onclick = () => { leadEditMode = false; render(); };
     const saveBtn = document.getElementById('ov-save-details');
     if(saveBtn) saveBtn.onclick = async () => {
       const val = id => document.getElementById(id)?.value;
@@ -5319,7 +5340,7 @@ function wireDetailTabEvents(l){
       };
       await DB.updateLead(l.id, patch);
       leadEditMode = false;
-      renderDetailModal(l.id); render();
+      render();
     };
   }
   {
@@ -5353,7 +5374,7 @@ function wireDetailTabEvents(l){
           patch.finalDate = document.getElementById(ids.dateId)?.value || todayStr();
         }
         await DB.updateLead(l.id, patch);
-        renderDetailModal(l.id); render();
+        render();
       };
     }
     const idx = STAGE_INDEX[l.stage];
@@ -5365,17 +5386,17 @@ function wireDetailTabEvents(l){
     const holdBtn = document.getElementById('hold-btn');
     if(holdBtn) holdBtn.onclick = async () => {
       await DB.updateLead(l.id, { onHold: { active:true, reasonCode: document.getElementById('hold-reason').value, notes: document.getElementById('hold-notes').value.trim(), since:new Date().toISOString() } });
-      renderDetailModal(l.id); render();
+      render();
     };
     const resumeBtn = document.getElementById('resume-btn');
     if(resumeBtn) resumeBtn.onclick = async () => {
       await DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' } });
-      renderDetailModal(l.id); render();
+      render();
     };
     const reassignOpenBtn = document.getElementById('reassign-open-btn');
-    if(reassignOpenBtn) reassignOpenBtn.onclick = () => { reassignMode = true; renderDetailModal(l.id); };
+    if(reassignOpenBtn) reassignOpenBtn.onclick = () => { reassignMode = true; render(); };
     const reassignCancelBtn = document.getElementById('reassign-cancel-btn');
-    if(reassignCancelBtn) reassignCancelBtn.onclick = () => { reassignMode = false; renderDetailModal(l.id); };
+    if(reassignCancelBtn) reassignCancelBtn.onclick = () => { reassignMode = false; render(); };
     const reassignConfirmBtn = document.getElementById('reassign-confirm-btn');
     if(reassignConfirmBtn) reassignConfirmBtn.onclick = async () => {
       const newExec = document.getElementById('reassign-new-exec').value;
@@ -5384,7 +5405,7 @@ function wireDetailTabEvents(l){
       try {
         await DB.reassignLead(l.id, newExec, remarks);
         reassignMode = false;
-        renderDetailModal(l.id); render();
+        render();
       } catch(err){
         alert(err.message || 'Could not reassign this lead.');
       }
@@ -5395,7 +5416,7 @@ function wireDetailTabEvents(l){
       const notes = document.getElementById('drop-notes').value.trim();
       await DB.updateLead(l.id, { stage:'closed', outcome:'dropped', reasonCode:reason, reasonNotes:notes,
         stageHistory: (l.stageHistory||[]).concat([{stage:'closed', at:new Date().toISOString(), by:l.assignedExecutive, note:'Dropped — '+reason}]) });
-      renderDetailModal(l.id); render();
+      render();
     };
   }
   {
@@ -5405,7 +5426,7 @@ function wireDetailTabEvents(l){
         technical: { status: document.getElementById('feas-technical-status').value, notes: document.getElementById('feas-technical-notes').value },
         financial: { status: document.getElementById('feas-financial-status').value, notes: document.getElementById('feas-financial-notes').value },
       }});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5443,7 +5464,7 @@ function wireDetailTabEvents(l){
         const url = document.getElementById('doc-url').value.trim() || '(no reference given)';
         await DB.updateLead(l.id, { documents: (l.documents||[]).concat([Object.assign({name, url, addedAt:new Date().toISOString()}, docMeta)]) });
       }
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5461,7 +5482,7 @@ function wireDetailTabEvents(l){
         verificationDate: todayStr(),
       });
       await DB.updateLead(l.id, { documents: docs });
-      renderDetailModal(l.id);
+      render();
     });
   }
   {
@@ -5483,7 +5504,7 @@ function wireDetailTabEvents(l){
         notes: document.getElementById('neg-notes').value.trim(),
         recordedBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5506,7 +5527,7 @@ function wireDetailTabEvents(l){
         remarks: document.getElementById('legal-remarks').value.trim(),
         verifiedBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5525,7 +5546,7 @@ function wireDetailTabEvents(l){
         remarks: document.getElementById('val-remarks').value.trim(),
         valuedBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5568,7 +5589,7 @@ function wireDetailTabEvents(l){
         remarks: document.getElementById('prop-remarks').value.trim(),
         proposedBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5597,7 +5618,7 @@ function wireDetailTabEvents(l){
           remarks: document.getElementById('appr-remarks')?.value.trim() || '',
           proposedBy: currentUser ? currentUser.name : '',
         }])});
-        renderDetailModal(l.id);
+        render();
       };
     }
     wireDecision('appr-approve', 'Approved');
@@ -5621,7 +5642,7 @@ function wireDetailTabEvents(l){
         remarks: document.getElementById('pay-remarks').value.trim(),
         recordedBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
   {
@@ -5642,15 +5663,14 @@ function wireDetailTabEvents(l){
         remarks: document.getElementById('reg-remarks').value.trim(),
         registeredBy: currentUser ? currentUser.name : '',
       }])});
-      renderDetailModal(l.id);
+      render();
     };
   }
 }
 
-// ---- shared modal / view wiring -----------------------------------------
-function closeModal(){ document.getElementById('modal-root').innerHTML = ''; currentDetailLeadId = null; leadEditMode = false; reassignMode = false; }
-
+// ---- shared view wiring ---------------------------------------------------
 function wireViewEvents(){
+  if(currentView==='leadDetail'){ wireLeadDetailViewEvents(); }
   if(currentView==='dashboard'){
     document.querySelectorAll('[data-drill]').forEach(el=>el.addEventListener('click', ()=>{
       const d = el.dataset.drill;
@@ -5666,7 +5686,6 @@ function wireViewEvents(){
     document.querySelectorAll('[data-open-id]').forEach(el=>el.addEventListener('click', ()=>openLeadDetail(el.dataset.openId)));
   }
 
-  if(currentView==='progress'){ wireProgressEvents(); }
   if(currentView==='list'){ wireListEvents(); }
   if(currentView==='newLead'){ wireNewLeadViewEvents(); }
   if(currentView==='reports'){ wireReportsEvents(); }
@@ -5712,7 +5731,10 @@ wireSidebarNav();
   if(KNOWN_VIEWS.includes(initial)) currentView = initial;
   history.replaceState({ view: currentView }, '', '#' + currentView);
   window.addEventListener('popstate', (e) => {
-    if(document.getElementById('overlay')) closeModal(); // don't leave a stale modal over a different page
+    // Lead Details isn't in KNOWN_VIEWS (it's a universal drill-through, not
+    // a navigable page — see canAccessView()), so Back/Forward landing on
+    // its old hash falls through to Dashboard below, same as any other
+    // unrecognized hash already does.
     const v = (e.state && e.state.view) || (location.hash || '').slice(1);
     currentView = KNOWN_VIEWS.includes(v) ? v : 'dashboard';
     suppressHistoryPush = true;
