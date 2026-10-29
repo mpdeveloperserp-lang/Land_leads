@@ -528,7 +528,7 @@ function isReadOnlyUser(u){ u = u || currentUser; return !!(u && u.role==='manag
 function guardReadOnlyDB(db){
   const proto = Object.getPrototypeOf(db);
   Object.getOwnPropertyNames(proto).forEach(name=>{
-    if(!/^(add|update|delete|toggle|save|reassign|create|change)/.test(name) || name==='addAuditEntry') return;
+    if(!/^(add|update|delete|toggle|save|reassign|create|change)/.test(name) || name==='addAuditEntry' || name==='changeOwnPassword') return;
     const orig = db[name];
     if(typeof orig !== 'function') return;
     db[name] = function(...args){
@@ -1311,6 +1311,13 @@ class MemoryDB {
   // above), so setting one directly is trivial — no backend involved. Kept
   // as its own method (not folded into updateUser's generic patch) so both
   // DB implementations share one call shape from the UI.
+  async changeOwnPassword(currentPassword, newPassword){
+    const u = this.users.find(x=>x.uid===(currentUser&&currentUser.uid));
+    if(!u) throw new Error('User not found.');
+    if(u.password !== currentPassword) throw new Error('Your current password is incorrect.');
+    u.password = newPassword;
+  }
+  async sendPasswordReset(email){ throw new Error('Password reset emails are not available in demo mode.'); }
   async changeUserPassword(userUid, newPassword){
     if(!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
     const u = this.users.find(x=>x.uid===userUid);
@@ -1629,6 +1636,18 @@ class FirestoreDB {
   // functions/ folder delivered alongside this file), which uses the Admin
   // SDK server-side and independently re-checks that the CALLER is a Head
   // or Admin before touching anything — never trust the client for this.
+  // Signed-in user changes THEIR OWN password — Firebase requires a fresh
+  // re-authentication with the current password first.
+  async changeOwnPassword(currentPassword, newPassword){
+    const fbUser = firebase.auth().currentUser;
+    if(!fbUser) throw new Error('You are not signed in.');
+    const cred = firebase.auth.EmailAuthProvider.credential(fbUser.email, currentPassword);
+    try{ await fbUser.reauthenticateWithCredential(cred); }
+    catch(err){ throw new Error(/wrong-password|invalid-credential|invalid-login/.test(err.code||'') ? 'Your current password is incorrect.' : friendlyAuthError(err)); }
+    await fbUser.updatePassword(newPassword);
+  }
+  // Works with no backend: emails the user a secure link to set a new password.
+  async sendPasswordReset(email){ await firebase.auth().sendPasswordResetEmail(email); }
   async changeUserPassword(userUid, newPassword){
     if(!newPassword || newPassword.length < 6) throw new Error('Password must be at least 6 characters.');
     if(typeof firebase.functions !== 'function'){
@@ -2119,8 +2138,83 @@ function renderUserInfo(){
   if(!el || !currentUser) return;
   el.innerHTML = `
     <div class="who"><b>${currentUser.name}</b><span>${ROLE_LABELS[currentUser.role]||currentUser.role}</span></div>
+    <button class="btn btn-sm btn-ghost" id="chpw-btn" title="Change your password">🔑 Change Password</button>
     <button class="btn btn-sm btn-ghost" id="logout-btn">Log out</button>`;
   document.getElementById('logout-btn').onclick = () => doLogout();
+  document.getElementById('chpw-btn').onclick = () => showChangeOwnPasswordModal();
+}
+// ---- Passwords --------------------------------------------------------------
+function canManagePasswords(){ return !!(currentUser && (currentUser.role==='admin' || currentUser.role==='sysadmin')); }
+function openSmallModal(title, bodyHtml, footerHtml){
+  document.getElementById('modal-root').innerHTML = `
+    <div class="modal-overlay" id="sm-overlay"><div class="modal" role="dialog" style="max-width:460px;">
+      <div class="modal-head" style="border-bottom:3px solid var(--gold);"><h3>${title}</h3><button class="x" id="sm-x" aria-label="Close">&times;</button></div>
+      <div class="modal-body">${bodyHtml}<div id="sm-msg" style="margin-top:10px;font-size:12.5px;"></div></div>
+      <div class="modal-footer" style="justify-content:center;">${footerHtml}</div>
+    </div></div>`;
+  const close = () => { document.getElementById('modal-root').innerHTML=''; document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if(e.key==='Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  document.getElementById('sm-x').onclick = close;
+  document.getElementById('sm-overlay').onclick = e => { if(e.target.id==='sm-overlay') close(); };
+  return close;
+}
+function smMsg(text, ok){ const m = document.getElementById('sm-msg'); if(m) m.innerHTML = `<div class="${ok?'badge-ok':'auth-error'}" style="padding:8px 10px;border-radius:6px;${ok?'background:var(--ok-bg);color:var(--ok);':''}">${text}</div>`; }
+function showChangeOwnPasswordModal(){
+  const close = openSmallModal('🔑 Change Your Password', `
+    <div class="form-grid one-col">
+      <div><label>Current Password${REQ}</label><input type="password" id="cp-cur" autocomplete="current-password"></div>
+      <div><label>New Password${REQ}</label><input type="password" id="cp-new" autocomplete="new-password" placeholder="At least 6 characters"></div>
+      <div><label>Confirm New Password${REQ}</label><input type="password" id="cp-new2" autocomplete="new-password"></div>
+    </div>`, `<button class="btn btn-ghost" id="cp-cancel">Cancel</button><button class="btn btn-teal" id="cp-save">Change Password</button>`);
+  document.getElementById('cp-cancel').onclick = close;
+  document.getElementById('cp-save').onclick = async () => {
+    const cur = document.getElementById('cp-cur').value, n1 = document.getElementById('cp-new').value, n2 = document.getElementById('cp-new2').value;
+    if(!cur || !n1 || !n2){ smMsg('Fill in all three fields.'); return; }
+    if(n1.length < 6){ smMsg('New password must be at least 6 characters.'); return; }
+    if(n1 !== n2){ smMsg('New password and confirmation do not match.'); return; }
+    if(n1 === cur){ smMsg('New password must be different from the current one.'); return; }
+    try{
+      await DB.changeOwnPassword(cur, n1);
+      await logAudit('Changed own password', 'User', currentUser.name, '');
+      smMsg('Password changed. Use the new password next time you sign in.', true);
+      document.getElementById('cp-save').disabled = true;
+      setTimeout(close, 1500);
+    }catch(err){ smMsg(err.message || 'Could not change the password.'); }
+  };
+}
+function showAdminPasswordModal(userUid){
+  if(!canManagePasswords()) return;
+  const u = DB.getAllUsers().find(x=>x.uid===userUid); if(!u) return;
+  const live = DB.isLive();
+  const close = openSmallModal('🔑 Change Password — ' + u.name, `
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 10px;">${u.email}</p>
+    <div class="form-grid one-col">
+      <div><label>New Password${REQ}</label><input type="password" id="ap-new" autocomplete="new-password" placeholder="At least 6 characters"></div>
+      <div><label>Confirm New Password${REQ}</label><input type="password" id="ap-new2" autocomplete="new-password"></div>
+    </div>
+    ${live ? `<p style="font-size:11.5px;color:var(--muted);margin-top:10px;">Setting a password directly needs the <b>adminSetUserPassword</b> Cloud Function deployed on Firebase. If it isn't, use <b>Send Reset Email</b>: ${u.name} gets a link to choose their own new password.</p>` : ''}`,
+    `<button class="btn btn-ghost" id="ap-cancel">Cancel</button>${live?`<button class="btn btn-gold" id="ap-reset">Send Reset Email</button>`:''}<button class="btn btn-teal" id="ap-save">Set Password</button>`);
+  document.getElementById('ap-cancel').onclick = close;
+  document.getElementById('ap-save').onclick = async () => {
+    const n1 = document.getElementById('ap-new').value, n2 = document.getElementById('ap-new2').value;
+    if(n1.length < 6){ smMsg('Password must be at least 6 characters.'); return; }
+    if(n1 !== n2){ smMsg('Password and confirmation do not match.'); return; }
+    try{
+      await DB.changeUserPassword(u.uid, n1);
+      await logAudit('Changed password', 'User', u.name, 'Set by ' + currentUser.name);
+      smMsg('Password updated for ' + u.name + '. Share it with them securely.', true);
+      document.getElementById('ap-save').disabled = true;
+    }catch(err){ smMsg(err.message || 'Could not change the password.'); }
+  };
+  const rs = document.getElementById('ap-reset');
+  if(rs) rs.onclick = async () => {
+    try{
+      await DB.sendPasswordReset(u.email);
+      await logAudit('Sent password reset email', 'User', u.name, '');
+      smMsg('Reset email sent to ' + u.email + '. They can set a new password from the link.', true);
+    }catch(err){ smMsg('Could not send the reset email: ' + friendlyAuthError(err)); }
+  };
 }
 
 function showLoginScreen(errorMsg){
@@ -3542,7 +3636,7 @@ function wireMastersEvents(){
 //      can reach this page at all). See renderCPDetailPage().
 const CP_DEF = MASTER_DEFS.find(m=>m.key==='channelPartners');
 
-function openCPDetail(id){
+function openCPDetail(id, startEditing){
   // Guards everyone uniformly against opening a CP outside what they can
   // access, not just via the row click — same belt-and-suspenders
   // precedent as openLeadDetail().
@@ -3559,7 +3653,7 @@ function openCPDetail(id){
   // this cache live via DB.onChange() above) — this short, deliberate
   // pause is what "display a loading indicator while fetching the
   // details" asked for, not a real network wait.
-  setTimeout(() => { cpDetailLoading = false; render(); }, 180);
+  setTimeout(() => { cpDetailLoading = false; if(startEditing) editingCPId = id; render(); }, 180);
 }
 function closeCPDetail(){
   cpDetailId = null;
@@ -3590,12 +3684,13 @@ function renderChannelPartnersView(){
       <td>${cpLeadCount(it.code)}</td>
       <td>${creator ? creator.name : '<span class="badge badge-muted">Shared / Legacy</span>'}</td>
       <td>${it.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
+      <td class="write-only" style="white-space:nowrap;"><button class="btn btn-sm btn-ghost" data-cp-view="${it.id}">View</button> <button class="btn btn-sm btn-teal" data-cp-modify="${it.id}">✎ Modify</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="7" class="empty">${search ? 'No Channel Partner matches that search.' : 'No Channel Partners yet.'}</td></tr>`;
+  }).join('') || `<tr><td colspan="8" class="empty">${search ? 'No Channel Partner matches that search.' : 'No Channel Partners yet.'}</td></tr>`;
 
   return `
     <div class="page-header"><h1>Channel Partners</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible per the same Manager-wise ownership as your Leads — a Channel Partner created before that rule existed shows as "Shared / Legacy" and stays visible to everyone until it's linked to a Manager or Executive. Click a CP Code to view its full details, modify it, or manage it.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">Visible per the same Manager-wise ownership as your Leads — a Channel Partner created before that rule existed shows as "Shared / Legacy" and stays visible to everyone until it's linked to a Manager or Executive. Click a CP Code or <b>View</b> for full details, or <b>✎ Modify</b> to edit name, phone and commission.</p>
     <div class="card filter-panel">
       <div class="form-grid">
         <div><label>Search (Name / Code / Mobile)</label><input type="text" id="cp-search" value="${cpSearch||''}" placeholder="e.g. 9884022222"></div>
@@ -3604,7 +3699,7 @@ function renderChannelPartnersView(){
     </div>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <table>
-        <tr>${CP_DEF.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Leads Sourced</th><th>Owner / Branch</th><th>Status</th></tr>
+        <tr>${CP_DEF.fields.map(f=>`<th>${FIELD_LABELS[f]||f}</th>`).join('')}<th>Leads Sourced</th><th>Owner / Branch</th><th>Status</th><th class="write-only">Actions</th></tr>
         ${rows}
       </table>
     </div>
@@ -3637,6 +3732,8 @@ function wireChannelPartnersEvents(){
   if(searchEl) searchEl.addEventListener('input', runSearch);
 
   document.querySelectorAll('#view-root td.clickable-row[data-id]').forEach(td=>td.addEventListener('click', ()=>openCPDetail(td.dataset.id)));
+  document.querySelectorAll('[data-cp-view]').forEach(b=>b.onclick = () => openCPDetail(b.dataset.cpView));
+  document.querySelectorAll('[data-cp-modify]').forEach(b=>b.onclick = () => openCPDetail(b.dataset.cpModify, true));
 
   const saveBtn = document.getElementById('cp-save');
   if(saveBtn) saveBtn.onclick = async () => {
@@ -3693,9 +3790,9 @@ function renderCPDetailPage(){
       }).join('')}
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code can't be changed here. Name and Phone are required; Phone must be a 10-digit mobile number. Saving never changes who owns this record — use Link/Change Owner for that.</p>
-    <div style="margin-top:10px;display:flex;gap:8px;">
-      <button class="btn btn-sm btn-teal" id="cpd-save">Save</button>
-      <button class="btn btn-sm btn-ghost" id="cpd-cancel">Cancel</button>
+    <div class="erp-actions">
+      <button class="btn btn-ghost" id="cpd-cancel">Cancel</button>
+      <button class="btn btn-teal" id="cpd-save">Save</button>
     </div>`;
 
   const linkForm = isLinking ? `
@@ -3723,8 +3820,8 @@ function renderCPDetailPage(){
       <div><label>Status</label><div>${cp.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</div></div>
     </div>
     ${linkForm}
-    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn btn-sm btn-ghost write-only" id="cpd-modify">✎ Modify</button>
+    <div class="erp-actions" style="flex-wrap:wrap;">
+      <button class="btn btn-teal write-only" id="cpd-modify">✎ Modify</button>
       <button class="btn btn-sm btn-ghost write-only" id="cpd-toggle" data-cp-toggle="${cp.id}">${cp.active!==false?'Deactivate':'Activate'}</button>
       ${canLink && !isLinking ? `<button class="btn btn-sm btn-ghost" id="cpd-link-open" data-cp-link-open="${cp.id}">${creator?'Change':'Link'} Owner</button>` : ''}
       ${canDelete ? `<button class="btn btn-sm btn-danger" id="cpd-delete" data-cp-delete="${cp.id}">Delete</button>` : ''}
@@ -3916,6 +4013,7 @@ function renderUsersView(){
       <td class="master-actions">
         <button class="icon-btn icon-ok" data-user-toggle="${u.uid}" title="${u.active!==false?'Deactivate':'Activate'}">${u.active!==false?'✓':'○'}</button>
         <button class="icon-btn icon-edit" data-user-edit="${u.uid}" title="Edit name/phone/role/reports-to">✎</button>
+        ${canManagePasswords() ? `<button class="icon-btn" data-user-pass="${u.uid}" title="Change password">🔑</button>` : ''}
         <button class="icon-btn icon-del" data-user-delete="${u.uid}" title="Remove access record">🗑</button>
       </td>
     </tr>`;
@@ -3962,6 +4060,7 @@ function renderUsersView(){
 }
 
 function wireUsersEvents(){
+  document.querySelectorAll('[data-user-pass]').forEach(b=>b.onclick = () => showAdminPasswordModal(b.dataset.userPass));
   document.querySelectorAll('[data-user-edit]').forEach(b=>b.onclick = () => { editingMasterId=b.dataset.userEdit; render(); });
   document.querySelectorAll('[data-user-toggle]').forEach(b=>b.onclick = async () => {
     const u = DB.getAllUsers().find(x=>x.uid===b.dataset.userToggle);
