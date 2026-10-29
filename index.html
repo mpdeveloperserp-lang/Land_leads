@@ -398,6 +398,28 @@ function landClassKind(label){
   return '';
 }
 const LAND_CLASS_TYPES = ['Outright','Joint Venture','Staggered Payment'];
+// 10-digit mobile number check used by every phone/contact field. Empty is
+// allowed unless the field is mandatory (that's checked separately).
+const PHONE_ATTRS = 'inputmode="numeric" maxlength="10" pattern="[0-9]{10}" placeholder="10-digit mobile"';
+function isPhone10(v){ return /^[0-9]{10}$/.test(String(v||'').trim()); }
+// Returns the label of the first filled-in phone field that isn't 10 digits.
+function badPhone(pairs){ for(const [label, v] of pairs){ if(String(v||'').trim() && !isPhone10(v)) return label; } return null; }
+function phoneAlert(label){ alert(label + ' must be a 10-digit mobile number (digits only).'); }
+// Mediators / Brokers — a master list like Channel Partners (code, name,
+// phone). Leads pick one from a dropdown; its name/phone are copied onto
+// the lead so reports and older screens keep working.
+function mediatorOptionsHtml(selectedName){
+  const list = DB.getMasters('mediators');
+  const legacy = selectedName && !list.some(m=>m.name===selectedName) ? `<option value="__legacy" selected>${selectedName} (old entry)</option>` : '';
+  return `<option value="">— none —</option>${legacy}` + list.map(m=>`<option value="${m.code}" ${m.name===selectedName?'selected':''}>${m.code} — ${m.name}${m.phone?' · '+m.phone:''}</option>`).join('');
+}
+function mediatorFromSelect(selId, lead){
+  const v = document.getElementById(selId)?.value || '';
+  if(!v) return { mediatorCode:'', mediatorName:'', mediatorPhone:'' };
+  if(v==='__legacy') return { mediatorCode: (lead&&lead.mediatorCode)||'', mediatorName: (lead&&lead.mediatorName)||'', mediatorPhone: (lead&&lead.mediatorPhone)||'' };
+  const m = DB.getMasters('mediators').find(x=>x.code===v);
+  return m ? { mediatorCode: m.code, mediatorName: m.name||'', mediatorPhone: m.phone||'' } : { mediatorCode:'', mediatorName:'', mediatorPhone:'' };
+}
 // Red asterisk for every mandatory field label, app-wide.
 const REQ = ' <span class="req-star">*</span>';
 // Pulls a lat/long out of whatever was typed/pasted into the Location Pin
@@ -837,7 +859,6 @@ const DEFAULT_FIELD_CONFIG = [
   { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:true,  filter:false },
   { field:'leadSource',         label:'Lead Source',            visible:true, mandatory:true,  filter:true  },
   { field:'channelPartnerCode', label:'Channel Partner',        visible:true, mandatory:false, filter:true  },
-  { field:'projectCode',        label:'Project',                 visible:true, mandatory:false, filter:true  },
   { field:'assignedExecutive',  label:'Assigned Executive',     visible:true, mandatory:false, filter:true  },
   { field:'village',            label:'Village Name',           visible:true, mandatory:false, filter:false },
   { field:'surveyNumber',       label:'Survey Number(s)',       visible:true, mandatory:false, filter:false },
@@ -849,7 +870,7 @@ const DEFAULT_FIELD_CONFIG = [
   { field:'frontage',           label:'Frontage (ft)',          visible:true, mandatory:false, filter:false },
   { field:'landownerName',      label:'Landowner Name',         visible:true, mandatory:false, filter:false },
   { field:'landownerPhone',     label:'Landowner Phone',        visible:true, mandatory:false, filter:false },
-  { field:'mediatorName',       label:'Mediator / Broker Name', visible:true, mandatory:false, filter:false },
+  { field:'mediatorName',       label:'Mediator / Broker',      visible:true, mandatory:false, filter:true },
   { field:'firstCallDate',      label:'First Call Made',        visible:true, mandatory:false, filter:false },
   { field:'siteVisitDate',      label:'Site Visit Date',        visible:true, mandatory:false, filter:false },
   // Was "Next Call Date" — same field, renamed: it IS the follow-up date
@@ -872,12 +893,11 @@ function effectiveFieldConfig(){
 // Maps each configurable field to the New Lead form input(s) it controls.
 const FIELD_TO_INPUT = {
   leadSourceDateTime:['nl-datetime'], leadSource:['nl-source'], channelPartnerCode:['nl-cp'],
-  projectCode:['nl-project'],
   assignedExecutive:['nl-exec'], village:['nl-village'], surveyNumber:['nl-survey'],
   siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
   extent:['nl-extent-val'], price:['nl-price-val'],
   landownerName:['nl-owner-name'], landownerPhone:['nl-owner-phone'],
-  mediatorName:['nl-med-name'], nextCallDate:['nl-nextcall'],
+  mediatorName:['nl-med'], nextCallDate:['nl-nextcall'],
   contactNumber:['nl-contact'], roadWidth:['nl-road'], frontage:['nl-frontage'],
   firstCallDate:['nl-firstcall'], siteVisitDate:['nl-sitevisit'],
 };
@@ -889,6 +909,7 @@ const FIELD_TO_INPUT = {
 const MASTER_DEFS = [
   { key:'leadSources',     label:'Lead Sources',          collection:'m_lead_sources',     fields:['label'] },
   { key:'channelPartners', label:'Channel Partners',      collection:'m_channel_partners', fields:['code','name','phone','commissionPct'], autoCode:'CP', trackOwner:true },
+  { key:'mediators',       label:'Mediators / Brokers',   collection:'m_mediators',        fields:['code','name','phone','commissionPct'], autoCode:'MED' },
   { key:'villages',        label:'Villages / Locations',  collection:'m_villages',         fields:['name','taluk','district'] },
   { key:'landClasses',     label:'Land Classification Types', collection:'m_land_classes',  fields:['label'] },
   { key:'dropReasons',     label:'Dropped Reasons',       collection:'m_drop_reasons',     fields:['label'] },
@@ -903,7 +924,6 @@ const MASTER_DEFS = [
   // deliberately NOT trackOwner — a project list is company-wide, same
   // "shared reference data" precedent as Villages/Land Classes, not
   // Manager-branch-scoped like Leads/Channel Partners.
-  { key:'projects',        label:'Projects',               collection:'m_projects',         fields:['code','name'], autoCode:'PRJ' },
 ];
 const FIELD_LABELS = { label:'Label', code:'Code', name:'Name', phone:'Phone', commissionPct:'Commission %', taluk:'Taluk', district:'District', role:'Role' };
 
@@ -920,15 +940,12 @@ function seedMaster(key){
       {code:'CP-007', name:'Anand Associates', phone:'9840012345', commissionPct:1.5},
       {code:'CP-014', name:'Elite Land Brokers', phone:'9884098840', commissionPct:2},
     ],
+    mediators: [],
     villages: ['Oragadam','Guduvancheri','Thiruporur','Sriperumbudur','Mahabalipuram','Chengalpattu','Padappai','Vandalur'].map(name=>({name, taluk:'', district:'Chennai / Kancheepuram'})),
     landClasses: LAND_CLASS_TYPES.map(label=>({label})),
     dropReasons: ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'].map(label=>({label})),
     holdReasons: ['Awaiting owner decision','Budget deferred','Litigation pending','Awaiting documents','Other'].map(label=>({label})),
     docCategories: ['Parent Documents','Sale Deed','Title Deed','Patta','Chitta','Adangal','Encumbrance Certificate','FMB Sketch','Survey Sketch','Land Tax Receipts','Legal Opinion','Power of Attorney','Identity / Ownership Supporting Document','Consent Document','Acquisition Agreement','Sale Agreement','Payment Receipt','Registration Document','Other'].map(label=>({label})),
-    projects: [
-      {code:'PRJ-01', name:'ECR Gateway Phase 2'},
-      {code:'PRJ-02', name:'SIPCOT Industrial Park Extension'},
-    ],
   };
   return data[key] || [];
 }
@@ -1018,7 +1035,7 @@ function seedLeads(){
     contactSubStatus:{ mediator:{contacted:false,date:''}, landowner:{contacted:false,date:''} },
     feasibility:{ technical:{status:'Not Started',notes:''}, financial:{status:'Not Started',notes:''} },
     documents:[], negotiationLog:[], legalVerificationLog:[], valuationLog:[], acquisitionProposalLog:[], approval:{approver:'',date:'',remarks:''},
-    paymentLog:[], registrationLog:[], projectCode:'',
+    paymentLog:[], registrationLog:[],
     finalPrice:null, finalDate:'', outcome:'',
     stageHistory:[{stage:o.stage, at:daysAgo(o.stageAge!=null?o.stageAge:o.age||0), by:o.assignedExecutive||'Karthik R', note:'Lead created'}],
     reassignmentHistory:[],
@@ -1030,22 +1047,22 @@ function seedLeads(){
     mk({stage:'contacted', age:9, stageAge:8, village:'Guduvancheri', siteLocation:'Behind bus depot', extentValue:60, extentUnit:'cent', priceValue:38, priceUnit:'cent', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Divya S', nextCallDate: todayStr(),
       contactSubStatus:{ mediator:{contacted:true,date:daysAgo(6)}, landowner:{contacted:false,date:''} }}),
     mk({stage:'site_visited', age:14, stageAge:4, village:'Thiruporur', siteLocation:'Off ECR link road', extentValue:1.8, extentUnit:'acre', priceValue:95, priceUnit:'ground', leadSource:'Field Survey', assignedExecutive:'Karthik R', landClassification:'Joint Venture', jvLandownerPct:40, jvRatio:'40:60', contactNumber:'9840055555', roadWidth:30, frontage:120, firstCallDate:daysAgo(13).slice(0,10), siteVisitDate:daysAgo(4).slice(0,10), geo:{lat:12.7466, lng:80.1956}}),
-    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', priceValue:0.9, priceUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10), projectCode:'PRJ-02',
+    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', priceValue:0.9, priceUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10),
       feasibility:{ technical:{status:'In Progress',notes:'Awaiting soil test report'}, financial:{status:'Cleared',notes:'Within board-approved budget band'} },
       onHold:{active:true, reasonCode:'Awaiting documents', notes:'Owner arranging patta copy', since: daysAgo(5)}}),
-    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', priceValue:1.4, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R', projectCode:'PRJ-01',
+    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', priceValue:1.4, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R',
       documents:[{name:'FMB Drawing', url:'(pending upload)', addedAt:daysAgo(8)},{name:'Patta Copy', url:'(pending upload)', addedAt:daysAgo(6)}],
       legalVerificationLog:[{date:daysAgo(5), titleStatus:'Minor Issues', encumbranceStatus:'Issues Found', encumbrancePeriod:'2005–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Partial', legalRiskRating:'Medium', remarks:'Name mismatch between patta and EC — owner arranging correction.', verifiedBy:'Land Manager'}],
       // A Joint Venture example (her other real mode, alongside Outright) —
       // captured as an Advance to the landowner, not a purchase Price.
       acquisitionProposalLog:[{date:daysAgo(2), status:'Draft', advanceAmount:25, modeOfAcquisition:'Joint Venture', paymentSchedule:'40:60 built-up area share, advance adjusted against owner’s final share', remarks:'Owner prefers JV over outright sale.', proposedBy:'Karthik R'}]}),
-    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', priceValue:1.05, priceUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S', projectCode:'PRJ-01',
+    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', priceValue:1.05, priceUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S',
       approval:{approver:'Land Manager', date:daysAgo(10), remarks:'Approved to proceed to negotiation'},
       negotiationLog:[{date:daysAgo(9), offerBy:'Us', amount:100, notes:'Opening offer per acre (lakh)'},{date:daysAgo(4), offerBy:'Owner', amount:112, notes:'Counter'}],
       legalVerificationLog:[{date:daysAgo(12), titleStatus:'Clear', encumbranceStatus:'Clear', encumbrancePeriod:'2000–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Yes', legalRiskRating:'Low', remarks:'No encumbrance found; clear to proceed.', verifiedBy:'Land Manager'}],
       valuationLog:[{date:daysAgo(10), method:'Guideline Value', guidelineRate:85, marketRate:108, agreedRate:100, totalValuation:320, remarks:'Guideline well below prevailing market rate for this stretch.', valuedBy:'Land Manager'}],
       acquisitionProposalLog:[{date:daysAgo(3), status:'Draft', proposedPurchasePrice:320, modeOfAcquisition:'Outright', paymentSchedule:'20% advance on agreement, 80% on registration', remarks:'First draft, pending Owner’s response to our latest offer.', proposedBy:'Divya S'}]}),
-    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', priceValue:0.85, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R', projectCode:'PRJ-01',
+    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', priceValue:0.85, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R',
       outcome:'acquired', finalPrice:0.88, finalDate:daysAgo(3),
       approval:{approver:'MD', date:daysAgo(4), remarks:'Approved'},
       acquisitionProposalLog:[
@@ -1702,10 +1719,7 @@ function landownerById(id){ return (DB.getAllLandowners()||[]).find(o=>o.id===id
 // Projects master for display, same "store the code, look up the label
 // live" pattern as Channel Partner. Never stores the project's name on the
 // lead itself, so a later project rename can't leave stale labels behind.
-function projectLabel(code){
-  if(!code) return '—';
-  const p = DB.getMasters('projects').find(p=>p.code===code);
-  return p ? (p.code+' — '+p.name) : code;
+function projectLabel(code){ return code || '—';
 }
 // ---- Audit Trail -----------------------------------------------------------
 // One call site per system-configuration write (Masters, Users, Workflow
@@ -2095,7 +2109,7 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', landClass:'', createdBy:'', source:'', exec:'', channelPartner:'', project:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
@@ -2258,9 +2272,9 @@ function leadMatchesFilters(l, f){
   if(f.excludeClosed && l.stage === 'closed') return false;
   if(f.source && l.leadSource !== f.source) return false;
   if(f.landClass && (l.landClassification||'') !== f.landClass) return false;
+  if(f.mediator && (l.mediatorName||'') !== f.mediator) return false;
   if(f.createdBy && leadCreatorName(l) !== f.createdBy) return false;
   if(f.channelPartner && l.channelPartnerCode !== f.channelPartner) return false;
-  if(f.project && l.projectCode !== f.project) return false;
   if(f.exec && l.assignedExecutive !== f.exec) return false;
   if(f.dateFrom){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d < f.dateFrom) return false; }
   if(f.dateTo){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d > f.dateTo) return false; }
@@ -2472,7 +2486,7 @@ function exportRowsPDF(rows, filename, title){
 function leadsReportRows(){
   return visibleLeads().map(l=>({
     'Lead ID': l.leadId, 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
-    Project: l.projectCode||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
+    Stage: stageLabel(l.stage), Source: l.leadSource||'',
     'Channel Partner': l.channelPartnerCode||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
     'Land Classification Type': l.landClassification||'',
     'Price (Outright/Staggered)': l.classPriceValue!=null ? (l.classPriceValue + ' / ' + (EXTENT_UNITS[l.classPriceUnit]?.label||'')) : '',
@@ -2483,30 +2497,6 @@ function leadsReportRows(){
     'Lead Date': (l.leadSourceDateTime||'').slice(0,10), 'First Call Made': l.firstCallDate||'', 'Site Visit Date': l.siteVisitDate||'', 'Follow Up Date': l.nextCallDate||'',
     'On Hold': (l.onHold&&l.onHold.active)?'Yes':'No', Outcome: l.outcome||''
   }));
-}
-// Project-wise Summary (Project Mapping) — one row per Project master entry
-// plus a trailing "Unassigned" row for any visible lead with no (or an
-// unknown) projectCode, so every visible lead is accounted for exactly
-// once. Extent is normalized to Acres (via leadExtentSqft()/sqftToUnit(),
-// the same unit-conversion helpers the Overview tab already uses) since
-// leads can each quote their own extent in a different unit.
-function projectSummaryRows(){
-  const leads = visibleLeads();
-  const projects = DB.getMasters('projects');
-  const groups = projects.map(p=>({ label: p.code+' — '+p.name, leads: leads.filter(l=>l.projectCode===p.code) }));
-  const knownCodes = new Set(projects.map(p=>p.code));
-  const unassigned = leads.filter(l=>!l.projectCode || !knownCodes.has(l.projectCode));
-  if(unassigned.length) groups.push({ label:'Unassigned / No Project', leads: unassigned });
-  return groups.map(g=>{
-    const acquired = g.leads.filter(l=>l.outcome==='acquired').length;
-    const dropped = g.leads.filter(l=>l.outcome==='dropped').length;
-    const activeCount = g.leads.length - acquired - dropped;
-    const totalExtentSqft = g.leads.reduce((s,l)=> s + leadExtentSqft(l), 0);
-    return {
-      Project: g.label, 'Total Leads': g.leads.length, Active: activeCount, Acquired: acquired, Dropped: dropped,
-      'Total Extent (Acres)': Number(sqftToUnit(totalExtentSqft,'acre').toFixed(2)),
-    };
-  });
 }
 function siteVisitReportRows(){
   const rows = [];
@@ -2531,7 +2521,6 @@ function siteVisitReportRows(){
 function renderReports(){
   const leads = visibleLeads();
   const visits = siteVisitReportRows();
-  const projectRows = projectSummaryRows();
 
   const leadsRows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
       <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
@@ -2542,10 +2531,7 @@ function renderReports(){
       <td><b>${v['Lead ID']}</b></td><td>${v.Village}</td><td>${fmtDate(v['Visited On'])}</td><td>${v['Logged By']||'—'}</td><td>${v.Executive||'—'}</td>
     </tr>`).join('') || '<tr><td colspan="5" class="empty">No site visits recorded yet — a visit is logged automatically when a lead moves to the Site Visited stage.</td></tr>';
 
-  const projRows = projectRows.map(p=>`<tr>
-      <td><b>${p.Project}</b></td><td>${p['Total Leads']}</td><td>${p.Active}</td><td>${p.Acquired}</td><td>${p.Dropped}</td>
-      <td>${fmtNum(p['Total Extent (Acres)'])}</td>
-    </tr>`).join('') || '<tr><td colspan="6" class="empty">No projects defined yet — add one under Masters.</td></tr>';
+
 
   return `
     <div class="page-header"><h1>Reports</h1></div>
@@ -2568,14 +2554,6 @@ function renderReports(){
       <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Visited On</th><th>Logged By</th><th>Executive</th></tr>${visitRows}</table></div>
     </div>
 
-    <h2 class="section-title">Project-wise Summary <span class="tag">${projectRows.length} project${projectRows.length===1?'':'s'}</span></h2>
-    <div class="card">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="rep-projects-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="rep-projects-pdf">⬇ Export PDF</button>
-      </div>
-      <div style="overflow-x:auto;"><table><tr><th>Project</th><th>Total Leads</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Total Extent (Acres)</th></tr>${projRows}</table></div>
-    </div>
   `;
 }
 function wireReportsEvents(){
@@ -2584,8 +2562,6 @@ function wireReportsEvents(){
   const lp = document.getElementById('rep-leads-pdf');   if(lp) lp.onclick = () => exportRowsPDF(leadsReportRows(), 'Land_Leads_Report.pdf', 'Leads Report');
   const ve = document.getElementById('rep-visits-excel'); if(ve) ve.onclick = () => exportRowsExcel(siteVisitReportRows(), 'Site_Visit_Report.xlsx', 'Site Visits');
   const vp = document.getElementById('rep-visits-pdf');   if(vp) vp.onclick = () => exportRowsPDF(siteVisitReportRows(), 'Site_Visit_Report.pdf', 'Site Visit Report');
-  const je = document.getElementById('rep-projects-excel'); if(je) je.onclick = () => exportRowsExcel(projectSummaryRows(), 'Project_Summary_Report.xlsx', 'Projects');
-  const jp = document.getElementById('rep-projects-pdf');   if(jp) jp.onclick = () => exportRowsPDF(projectSummaryRows(), 'Project_Summary_Report.pdf', 'Project-wise Summary');
 }
 
 // ---- MIS ANALYTICS ---------------------------------------------------------
@@ -2828,6 +2804,9 @@ function renderList(){
         <div><label>Lead Owner (Created By)</label><select id="lf-creator">
           <option value="">Anyone</option>${[...new Set(allLeads.map(leadCreatorName))].sort().map(n=>`<option value="${n}" ${listFilters.createdBy===n?'selected':''}>${n}</option>`).join('')}
         </select></div>
+        <div><label>Mediator / Broker</label><select id="lf-mediator">
+          <option value="">All mediators</option>${[...new Set(DB.getMasters('mediators').map(m=>m.name).concat(allLeads.map(l=>l.mediatorName)).filter(Boolean))].sort().map(n=>`<option value="${n}" ${listFilters.mediator===n?'selected':''}>${n}</option>`).join('')}
+        </select></div>
         <div><label>Land Classification Type</label><select id="lf-class">
           <option value="">All types</option>${DB.getMasters('landClasses').map(c=>`<option value="${c.label}" ${listFilters.landClass===c.label?'selected':''}>${c.label}</option>`).join('')}
         </select></div>
@@ -2839,9 +2818,6 @@ function renderList(){
         </select></div>` : ''}
         ${(!fcfg.assignedExecutive || fcfg.assignedExecutive.filter!==false) ? `<div><label>Assigned Executive</label><select id="lf-exec">
           <option value="">All executives</option>${execs.map(e=>`<option value="${e.name}" ${listFilters.exec===e.name?'selected':''}>${e.name}</option>`).join('')}
-        </select></div>` : ''}
-        ${(!fcfg.projectCode || fcfg.projectCode.filter!==false) ? `<div><label>Project</label><select id="lf-project">
-          <option value="">All projects</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${listFilters.project===p.code?'selected':''}>${p.code} — ${p.name}</option>`).join('')}
         </select></div>` : ''}
         <div><label>Lead Date From</label><input type="date" id="lf-datefrom" value="${listFilters.dateFrom}"></div>
         <div><label>Lead Date To</label><input type="date" id="lf-dateto" value="${listFilters.dateTo}"></div>
@@ -2890,13 +2866,13 @@ function wireListEvents(){
   if(goBtn) goBtn.onclick = () => {
     listFilters.stage = val('lf-stage');
     if(document.getElementById('lf-class')) listFilters.landClass = val('lf-class');
+    if(document.getElementById('lf-mediator')) listFilters.mediator = val('lf-mediator');
     if(document.getElementById('lf-creator')) listFilters.createdBy = val('lf-creator');
     // Source/Channel Partner/Executive filters can be hidden via the Configure
     // page's Filter flag — only read them when actually rendered.
     if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
     if(document.getElementById('lf-cp')) listFilters.channelPartner = val('lf-cp');
     if(document.getElementById('lf-exec')) listFilters.exec = val('lf-exec');
-    if(document.getElementById('lf-project')) listFilters.project = val('lf-project');
     listFilters.dateFrom = val('lf-datefrom');
     listFilters.dateTo = val('lf-dateto');
     listPage = 1;
@@ -3020,8 +2996,8 @@ function renderMasters(){
             const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, items);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="mf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
-          const req = (f===def.fields[0]) || (def.autoCode && f==='name') || (def.key==='channelPartners' && f==='phone');
-          return `<div><label>${FIELD_LABELS[f]||f}${req?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
+          const req = (f===def.fields[0]) || (def.autoCode && f==='name') || ((def.key==='channelPartners' || def.key==='mediators') && f==='phone');
+          return `<div><label>${FIELD_LABELS[f]||f}${req?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} ${f==='phone'?PHONE_ATTRS:''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
         }).join('')}
       </div>
       ${def.autoCode ? `<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — ${editing ? 'it stays as it was assigned and can\'t be changed here.' : 'the next one is shown above and is applied when you click Add.'}</p>` : ''}
@@ -3071,6 +3047,10 @@ function wireMastersEvents(){
       fields[f] = v;
     });
     if(!ok){ alert('Please fill in the fields marked with a red *.'); return; }
+    if(def.key==='mediators'){
+      if(!fields.phone){ alert('Phone is required.'); return; }
+      if(!isPhone10(fields.phone)){ phoneAlert('Phone'); return; }
+    }
     const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
     if(editingMasterId){
       await DB.updateMaster(currentMasterKey, editingMasterId, fields);
@@ -3179,7 +3159,7 @@ function renderChannelPartnersView(){
             const codeVal = nextMasterCode(CP_DEF.autoCode, allItemsForCode);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
-          return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value=""></div>`;
+          return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} ${f==='phone'?PHONE_ATTRS:''} value=""></div>`;
         }).join('')}
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — the next one is shown above and is applied when you click Add. Adding a new Channel Partner here stamps you as its owner. Name and Phone are required; Phone must be a 10-digit mobile number.</p>
@@ -3252,7 +3232,7 @@ function renderCPDetailPage(){
         if(CP_DEF.autoCode && f==='code'){
           return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cfd-${f}" value="${cp.code||''}" disabled title="Code can't be changed here"></div>`;
         }
-        return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cfd-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${cp[f]!=null?cp[f]:''}"></div>`;
+        return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cfd-${f}" ${f==='commissionPct'?'step="0.01"':''} ${f==='phone'?PHONE_ATTRS:''} value="${cp[f]!=null?cp[f]:''}"></div>`;
       }).join('')}
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code can't be changed here. Name and Phone are required; Phone must be a 10-digit mobile number. Saving never changes who owns this record — use Link/Change Owner for that.</p>
@@ -3479,7 +3459,7 @@ function renderUsersView(){
       <div class="form-grid">
         <div><label>Name${REQ}</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
         <div><label>Email${editing?'':REQ}</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
-        <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
+        <div><label>Phone</label><input type="text" id="uf-phone" ${PHONE_ATTRS} value="${editing?(editing.phone||''):''}"></div>
         <div><label>Designation</label><input type="text" id="uf-designation" value="${editing?(editing.designation||''):''}" placeholder="e.g. VP, GM, AGM, Team Lead"></div>
         <div><label>Role${REQ}</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
         <div id="uf-reports-to-wrap" ${reportsToHidden ? 'style="display:none;"' : ''}><label>Reports To</label><select id="uf-reports-to">${reportsToOptionsHtml(roleForForm, editing?editing.reportsTo:'', editing?editing.uid:'')}</select></div>
@@ -3536,6 +3516,7 @@ function wireUsersEvents(){
     const designation = (document.getElementById('uf-designation')?.value || '').trim();
     if(editingMasterId && reportsTo && subtreeUids(editingMasterId).has(reportsTo)){ alert('That would create a loop — someone cannot report to a person below them.'); return; }
     if(!name){ alert('Name is required.'); return; }
+    if(phone && !isPhone10(phone)){ phoneAlert('Phone'); return; }
     if(editingMasterId){
       const newPassword = document.getElementById('uf-password').value;
       if(newPassword && newPassword.length < 6){ alert('New password must be at least 6 characters, or leave it blank to keep the current one.'); return; }
@@ -3615,8 +3596,8 @@ function renderLandownersView(){
       <div class="form-grid">
         <div><label>Landowner ID</label><input type="text" id="lo-code" value="${codeVal}" disabled title="Generated automatically — not editable"></div>
         <div><label>Full Name${REQ}</label><input type="text" id="lo-name" value="${editing?editing.fullName:''}"></div>
-        <div><label>Contact Number${REQ}</label><input type="text" id="lo-contact" value="${editing?(editing.contactNumber||''):''}"></div>
-        <div><label>Alternate Contact Number</label><input type="text" id="lo-alt-contact" value="${editing?(editing.altContactNumber||''):''}"></div>
+        <div><label>Contact Number${REQ}</label><input type="text" id="lo-contact" ${PHONE_ATTRS} value="${editing?(editing.contactNumber||''):''}"></div>
+        <div><label>Alternate Contact Number</label><input type="text" id="lo-alt-contact" ${PHONE_ATTRS} value="${editing?(editing.altContactNumber||''):''}"></div>
         <div><label>Email</label><input type="email" id="lo-email" value="${editing?(editing.email||''):''}"></div>
         <div><label>District</label><input type="text" id="lo-district" value="${editing?(editing.district||''):''}"></div>
         <div><label>Taluk</label><input type="text" id="lo-taluk" value="${editing?(editing.taluk||''):''}"></div>
@@ -3672,6 +3653,8 @@ function wireLandownersEvents(){
     }
     if(!fields.fullName){ alert('Full Name is required.'); return; }
     if(!fields.contactNumber){ alert('Contact Number is required.'); return; }
+    const bpLo = badPhone([['Contact Number', fields.contactNumber], ['Alternate Contact Number', fields.altContactNumber]]);
+    if(bpLo){ phoneAlert(bpLo); return; }
     const dupes = findDuplicateLandowners(fields, editingLandownerId);
     if(dupes.length){
       const list = dupes.map(d=>`${d.fullName} (${d.contactNumber||'no phone'}, ${d.village||'no village'})`).join('; ');
@@ -4188,7 +4171,6 @@ function renderNewLeadView(){
   const villages = DB.getMasters('villages');
   const classes = DB.getMasters('landClasses');
   const execs = visibleExecutives();
-  const projects = DB.getMasters('projects');
   const unitOpts = () => Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}">${v.label}</option>`).join('');
 
   return `
@@ -4196,11 +4178,10 @@ function renderNewLeadView(){
     <div class="card">
       <div class="form-grid">
         <div data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
-        <div data-field="contactNumber"><label>Contact Number</label><input type="text" id="nl-contact" placeholder="10-digit mobile"></div>
+        <div data-field="contactNumber"><label>Contact Number</label><input type="text" id="nl-contact" ${PHONE_ATTRS}></div>
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
         <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
         <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
-        <div data-field="projectCode"><label>Project</label><select id="nl-project"><option value="">— none —</option>${projects.map(p=>`<option value="${p.code}">${p.code} — ${p.name}</option>`).join('')}</select></div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}${e.designation?' — '+e.designation:''}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
         <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
@@ -4217,9 +4198,8 @@ function renderNewLeadView(){
         <div data-field="roadWidth"><label>Road Width (ft)</label><input type="number" id="nl-road" step="0.1"></div>
         <div data-field="frontage"><label>Frontage (ft)</label><input type="number" id="nl-frontage" step="0.1"></div>
         <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
-        <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone"></div>
-        <div data-field="mediatorName"><label>Mediator / Broker Name</label><input type="text" id="nl-med-name"></div>
-        <div><label>Mediator Phone</label><input type="text" id="nl-med-phone"></div>
+        <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone" ${PHONE_ATTRS}></div>
+        <div data-field="mediatorName"><label>Mediator / Broker</label><select id="nl-med">${mediatorOptionsHtml('')}</select></div>
         <div data-field="firstCallDate"><label>First Call Made</label><input type="date" id="nl-firstcall"></div>
         <div data-field="siteVisitDate"><label>Site Visit Date</label><input type="date" id="nl-sitevisit"></div>
         <div data-field="nextCallDate"><label>Follow Up Date</label><input type="date" id="nl-nextcall"></div>
@@ -4292,6 +4272,8 @@ function wireNewLeadViewEvents(){
     // optional by default: it depends on a pre-registered Villages master
     // entry existing, which isn't always true when a lead needs logging
     // quickly, unlike Site Location which is free text).
+    const bpNew = badPhone([['Contact Number', document.getElementById('nl-contact').value], ['Landowner Phone', document.getElementById('nl-owner-phone').value]]);
+    if(bpNew){ phoneAlert(bpNew); return; }
     const village = document.getElementById('nl-village').value.trim();
     const exec = document.getElementById('nl-exec').value.trim() || 'Unassigned';
     const numOrNull = id => { const v = parseFloat(document.getElementById(id).value); return isNaN(v) ? null : v; };
@@ -4301,7 +4283,6 @@ function wireNewLeadViewEvents(){
       leadSourceDateTime: document.getElementById('nl-datetime').value,
       leadSource: document.getElementById('nl-source').value,
       channelPartnerCode: document.getElementById('nl-cp').value.trim(),
-      projectCode: document.getElementById('nl-project').value.trim(),
       village, siteLocation: document.getElementById('nl-loc').value.trim(),
       surveyNumber: document.getElementById('nl-survey').value.trim(),
       googlePin: document.getElementById('nl-pin').value.trim(),
@@ -4318,8 +4299,6 @@ function wireNewLeadViewEvents(){
       landownerName: document.getElementById('nl-owner-name').value.trim(),
       landownerPhone: document.getElementById('nl-owner-phone').value.trim(),
       landownerJointOwners: 1,
-      mediatorName: document.getElementById('nl-med-name').value.trim(),
-      mediatorPhone: document.getElementById('nl-med-phone').value.trim(),
       mediatorCommission:'',
       assignedExecutive: exec,
       stage: 'new',
@@ -4336,7 +4315,7 @@ function wireNewLeadViewEvents(){
       createdByName: currentUser ? currentUser.name : '',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:(currentUser&&currentUser.name)||exec, note:'Lead created'}],
       reassignmentHistory:[],
-    }, readClassFields('nl'));
+    }, readClassFields('nl'), mediatorFromSelect('nl-med', null));
     await DB.addLead(lead);
     goToLeadsList({});
   };
@@ -4419,10 +4398,10 @@ function renderLeadDetailPage(){
 // (red * on the label, and enforced on Save).
 const MODIFY_FIELD_INPUTS = {
   siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
-  channelPartnerCode:'ov-e-cp', projectCode:'ov-e-project', village:'ov-e-village', surveyNumber:'ov-e-survey',
+  channelPartnerCode:'ov-e-cp', village:'ov-e-village', surveyNumber:'ov-e-survey',
   googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val', price:'ov-e-price-val',
   roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner-name', landownerPhone:'ov-e-owner-phone',
-  mediatorName:'ov-e-med-name', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
+  mediatorName:'ov-e-med', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
 };
 function labelForInput(el){
   let n = el && el.parentElement;
@@ -4645,11 +4624,11 @@ function renderOverviewTab(l){
       <div class="form-grid">
         <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
         <div><label>Site Location</label><input type="text" id="ov-e-loc" value="${l.siteLocation||''}"></div>
-        <div><label>Contact Number</label><input type="text" id="ov-e-contact" value="${l.contactNumber||''}"></div>
+        <div><label>Contact Number</label><input type="text" id="ov-e-contact" ${PHONE_ATTRS} value="${l.contactNumber||''}"></div>
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
-        <div><label>Project</label><select id="ov-e-project"><option value="" ${!l.projectCode?'selected':''}>— none —</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${p.code===l.projectCode?'selected':''}>${p.code} — ${p.name}</option>`).join('')}</select></div>
+
         <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
         <div><label>Assigned Executive</label>${canAssign
           ? `<select id="ov-e-exec"><option value="${l.assignedExecutive||''}" selected>${l.assignedExecutive||'— unassigned —'} (current)</option>${targets.map(u=>`<option value="${u.name}">${u.name}${u.designation?' — '+u.designation:''}</option>`).join('')}</select>`
@@ -4666,9 +4645,8 @@ function renderOverviewTab(l){
         <div><label>Road Width (ft)</label><input type="number" id="ov-e-road" step="0.1" value="${l.roadWidth!=null?l.roadWidth:''}"></div>
         <div><label>Frontage (ft)</label><input type="number" id="ov-e-frontage" step="0.1" value="${l.frontage!=null?l.frontage:''}"></div>
         <div><label>Landowner Name</label><input type="text" id="ov-e-owner-name" value="${l.landownerName||''}"></div>
-        <div><label>Landowner Phone</label><input type="text" id="ov-e-owner-phone" value="${l.landownerPhone||''}"></div>
-        <div><label>Mediator Name</label><input type="text" id="ov-e-med-name" value="${l.mediatorName||''}"></div>
-        <div><label>Mediator Phone</label><input type="text" id="ov-e-med-phone" value="${l.mediatorPhone||''}"></div>
+        <div><label>Landowner Phone</label><input type="text" id="ov-e-owner-phone" ${PHONE_ATTRS} value="${l.landownerPhone||''}"></div>
+        <div><label>Mediator / Broker</label><select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select></div>
         <div><label>First Call Made</label><input type="date" id="ov-e-firstcall" value="${l.firstCallDate||''}"></div>
         <div><label>Site Visit Date</label><input type="date" id="ov-e-sitevisit" value="${l.siteVisitDate||''}"></div>
         <div><label>Follow Up Date</label><input type="date" id="ov-e-nextcall" value="${l.nextCallDate||''}"></div>
@@ -4689,7 +4667,6 @@ function renderOverviewTab(l){
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
-      <div><label>Project</label><div>${projectLabel(l.projectCode)}</div></div>
       <div><label>Lead Owner (Created By)</label><div>${leadCreatorName(l)}</div></div>
       <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
@@ -4701,7 +4678,7 @@ function renderOverviewTab(l){
       <div><label>Road Width</label><div>${l.roadWidth!=null && l.roadWidth!=='' ? fmtNum(l.roadWidth)+' ft' : '—'}</div></div>
       <div><label>Frontage</label><div>${l.frontage!=null && l.frontage!=='' ? fmtNum(l.frontage)+' ft' : '—'}</div></div>
       <div><label>Landowner</label><div>${l.landownerName||'—'} ${l.landownerPhone?('· '+l.landownerPhone):''}</div></div>
-      <div><label>Mediator</label><div>${l.mediatorName||'—'} ${l.mediatorPhone?('· '+l.mediatorPhone):''}</div></div>
+      <div><label>Mediator / Broker</label><div>${l.mediatorCode?l.mediatorCode+' — ':''}${l.mediatorName||'—'} ${l.mediatorPhone?('· '+l.mediatorPhone):''}</div></div>
       <div><label>First Call Made</label><div>${fmtDate(l.firstCallDate)}</div></div>
       <div><label>Site Visit Date</label><div>${fmtDate(l.siteVisitDate)}</div></div>
       ${followBlock}
@@ -4931,6 +4908,8 @@ function wireDetailTabEvents(l){
     if(saveBtn) saveBtn.onclick = async () => {
       const missing = missingModifyMandatory();
       if(missing){ alert(missing + ' is required (fields marked with a red *).'); return; }
+      const bp = badPhone([['Contact Number', document.getElementById('ov-e-contact')?.value], ['Landowner Phone', document.getElementById('ov-e-owner-phone')?.value]]);
+      if(bp){ phoneAlert(bp); return; }
       const val = id => document.getElementById(id)?.value;
       const numOrNull = id => { const v = parseFloat(val(id)); return isNaN(v) ? null : v; };
       const geo = readPickerGeo('ov-e');
@@ -4938,7 +4917,6 @@ function wireDetailTabEvents(l){
         leadSource: (val('ov-e-source')||'').trim(),
         leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime || '',
         channelPartnerCode: (val('ov-e-cp')||'').trim(),
-        projectCode: (val('ov-e-project')||'').trim(),
         village: (val('ov-e-village')||'').trim(),
         siteLocation: (val('ov-e-loc')||'').trim(),
         contactNumber: (val('ov-e-contact')||'').trim(),
@@ -4954,12 +4932,10 @@ function wireDetailTabEvents(l){
         frontage: numOrNull('ov-e-frontage'),
         landownerName: (val('ov-e-owner-name')||'').trim(),
         landownerPhone: (val('ov-e-owner-phone')||'').trim(),
-        mediatorName: (val('ov-e-med-name')||'').trim(),
-        mediatorPhone: (val('ov-e-med-phone')||'').trim(),
         firstCallDate: val('ov-e-firstcall') || '',
         siteVisitDate: val('ov-e-sitevisit') || '',
         nextCallDate: val('ov-e-nextcall') || '',
-      }, readClassFields('ov-e'));
+      }, readClassFields('ov-e'), mediatorFromSelect('ov-e-med', l));
       if(patch.landClassification && landClassKind(patch.landClassification)==='jv' && patch.jvLandownerPct!=null && (patch.jvLandownerPct<0 || patch.jvLandownerPct>100)){
         alert('JV Ratio must be between 0 and 100 for the landowner share.'); return;
       }
