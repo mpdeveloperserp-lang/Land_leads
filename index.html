@@ -1005,6 +1005,7 @@ function seedLeads(){
     finalPrice:null, finalDate:'', outcome:'',
     stageHistory:[{stage:o.stage, at:daysAgo(o.stageAge!=null?o.stageAge:o.age||0), by:o.assignedExecutive||'Karthik R', note:'Lead created'}],
     reassignmentHistory:[],
+    createdByName: o.createdByName || 'Land Manager',
   }, o);
 
   return [
@@ -2077,7 +2078,7 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', landClass:'', source:'', exec:'', channelPartner:'', project:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', landClass:'', createdBy:'', source:'', exec:'', channelPartner:'', project:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
@@ -2207,6 +2208,14 @@ function leadValue(l){ return leadExtentSqft(l) * leadPricePerSqft(l); }
 // above, just reading finalPrice instead of priceValue, for MIS Analytics'
 // "Acquired Value" (the actual closing rate, not the original ask).
 function leadFinalValue(l){ return l.finalPrice==null ? null : leadExtentSqft(l) * pricePerSqft(l.finalPrice, l.priceUnit); }
+// Lead Created By. Leads entered before this field existed fall back to
+// whoever the "Lead created" history entry names (older versions recorded
+// the assigned executive there, so treat those as best-effort).
+function leadCreatorName(l){
+  if(l && l.createdByName) return l.createdByName;
+  const first = l && (l.stageHistory||[]).find(h=>/Lead created/i.test(h.note||''));
+  return (first && first.by) || '—';
+}
 function isClosed(l){ return l.stage==='closed'; }
 function isActive(l){ return !isClosed(l); }
 function daysInStage(l){
@@ -2232,6 +2241,7 @@ function leadMatchesFilters(l, f){
   if(f.excludeClosed && l.stage === 'closed') return false;
   if(f.source && l.leadSource !== f.source) return false;
   if(f.landClass && (l.landClassification||'') !== f.landClass) return false;
+  if(f.createdBy && leadCreatorName(l) !== f.createdBy) return false;
   if(f.channelPartner && l.channelPartnerCode !== f.channelPartner) return false;
   if(f.project && l.projectCode !== f.project) return false;
   if(f.exec && l.assignedExecutive !== f.exec) return false;
@@ -2305,7 +2315,7 @@ function renderDashboard(){
   // place as the dashboard's other drill-throughs — the All Leads page,
   // filtered to just these — rather than opening that one lead's detail.
   const newLeadsList = leads.filter(l=>l.stage==='new').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,8).map(l=>
-    `<div class="callitem" data-drill="newLeads" style="cursor:pointer;"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+    `<div class="callitem" data-drill="newLeads" style="cursor:pointer;"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(by ${leadCreatorName(l)})</span></span>
       <span class="badge badge-navy">${fmtDate(l.createdAt)}</span></div>`
   ).join('') || '<div class="empty">No new leads yet</div>';
 
@@ -2329,10 +2339,15 @@ function renderDashboard(){
   leads.filter(l=>l.channelPartnerCode).forEach(l=>{ byCP[l.channelPartnerCode]=(byCP[l.channelPartnerCode]||0)+1; });
   const cpRows = Object.entries(byCP).sort((a,b)=>b[1]-a[1]).map(([cp,c])=>
     `<tr class="clickable-row" data-cp="${cp}"><td>${cp}</td><td>${c}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No channel partner leads yet</td></tr>';
+  // Leads by the person who CREATED them (not the assigned lead owner).
+  const byCreator = {};
+  leads.forEach(l=>{ const n = leadCreatorName(l); byCreator[n] = byCreator[n] || { total:0, active:0 }; byCreator[n].total++; if(isActive(l)) byCreator[n].active++; });
+  const creatorRows = Object.entries(byCreator).sort((a,b)=>b[1].total-a[1].total).map(([n,c])=>
+    `<tr class="clickable-row" data-creator="${n.replace(/"/g,'&quot;')}"><td>${n}</td><td>${c.total}</td><td>${c.active}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">No leads yet</td></tr>';
 
   const callList = leads.filter(l=>isActive(l) && l.nextCallDate).sort((a,b)=>new Date(a.nextCallDate)-new Date(b.nextCallDate)).slice(0,8).map(l=>{
     const info = callBadgeInfo(l);
-    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${l.assignedExecutive})</span></span>
+    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(by ${leadCreatorName(l)})</span></span>
       <span class="badge badge-${info.type==='danger'?'danger':info.type==='warn'?'warn':'muted'}">${info.text} · ${fmtDate(l.nextCallDate)}</span></div>`;
   }).join('') || '<div class="empty">No upcoming calls scheduled</div>';
 
@@ -2391,6 +2406,8 @@ function renderDashboard(){
         <div class="card"><table><tr><th>Code</th><th>Count</th></tr>${cpRows}</table></div>
       </div>
     </div>
+    <h2 class="section-title">Leads by Created By <span class="tag">click a row</span></h2>
+    <div class="card"><table><tr><th>Lead Created By</th><th>Total Leads</th><th>Active</th></tr>${creatorRows}</table></div>
   `;
 }
 
@@ -2439,7 +2456,7 @@ function leadsReportRows(){
   return visibleLeads().map(l=>({
     'Lead ID': l.leadId, 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
     Project: l.projectCode||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
-    'Channel Partner': l.channelPartnerCode||'', Executive: l.assignedExecutive||'',
+    'Channel Partner': l.channelPartnerCode||'', 'Lead Created By': leadCreatorName(l), 'Lead Owner': l.assignedExecutive||'',
     'Land Classification Type': l.landClassification||'',
     'Price (Outright/Staggered)': l.classPriceValue!=null ? (l.classPriceValue + ' / ' + (EXTENT_UNITS[l.classPriceUnit]?.label||'')) : '',
     'JV Ratio': l.jvRatio||'', 'Instalment Schedule': l.instalmentSchedule||'',
@@ -2767,11 +2784,12 @@ function renderList(){
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
       <td class="clickable-row" data-id="${l.id}">${l.landownerName||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
+      <td class="clickable-row" data-id="${l.id}">${leadCreatorName(l)}</td>
       <td class="clickable-row" data-id="${l.id}">${l.assignedExecutive||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${followUp}</td>
       <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="13" class="empty">No leads match these filters</td></tr>`;
+  }).join('') || `<tr><td colspan="14" class="empty">No leads match these filters</td></tr>`;
 
   return `
     <div class="page-header">
@@ -2783,6 +2801,9 @@ function renderList(){
       <div class="form-grid">
         <div><label>Status</label><select id="lf-stage">
           <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
+        </select></div>
+        <div><label>Lead Created By</label><select id="lf-creator">
+          <option value="">Anyone</option>${[...new Set(allLeads.map(leadCreatorName))].sort().map(n=>`<option value="${n}" ${listFilters.createdBy===n?'selected':''}>${n}</option>`).join('')}
         </select></div>
         <div><label>Land Classification Type</label><select id="lf-class">
           <option value="">All types</option>${DB.getMasters('landClasses').map(c=>`<option value="${c.label}" ${listFilters.landClass===c.label?'selected':''}>${c.label}</option>`).join('')}
@@ -2822,7 +2843,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Executive</th><th>Follow-up</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Created By</th><th>Lead Owner</th><th>Follow-up</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -2846,6 +2867,7 @@ function wireListEvents(){
   if(goBtn) goBtn.onclick = () => {
     listFilters.stage = val('lf-stage');
     if(document.getElementById('lf-class')) listFilters.landClass = val('lf-class');
+    if(document.getElementById('lf-creator')) listFilters.createdBy = val('lf-creator');
     // Source/Channel Partner/Executive filters can be hidden via the Configure
     // page's Filter flag — only read them when actually rendered.
     if(document.getElementById('lf-source')) listFilters.source = val('lf-source');
@@ -4283,6 +4305,11 @@ function wireNewLeadViewEvents(){
       contactSubStatus:{ mediator:{contacted:false,date:''}, landowner:{contacted:false,date:''} },
       documents:[], approval:{approver:'',date:'',remarks:''},
       finalPrice:null, finalDate:'', outcome:'',
+      // Lead Created By — who actually entered the lead (Sara: "dashboard will
+      // show the name of the person who created and not whom it's assigned
+      // to, which is lead owner"). Stamped once here, never edited.
+      createdByUid: currentUser ? currentUser.uid : '',
+      createdByName: currentUser ? currentUser.name : '',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:(currentUser&&currentUser.name)||exec, note:'Lead created'}],
       reassignmentHistory:[],
     }, readClassFields('nl'));
@@ -4310,6 +4337,7 @@ function openLeadDetail(id){
     alert('This lead is outside the leads you can access.'); return;
   }
   leadEditMode = false; // opening a (possibly different) lead always starts in read-only view
+  changeStatusMode = false;
   reassignMode = false;
   currentDetailLeadId = id;
   if(currentView !== 'leadDetail') previousView = currentView;
@@ -4358,15 +4386,23 @@ function renderLeadDetailPage(){
       <div class="card">
         <h2 class="section-title" style="margin-top:0;">Documents</h2>
         ${renderDocumentsSection(l)}
-        <h2 class="section-title">History</h2>
-        ${renderHistoryTab(l)}
       </div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <h2 class="section-title" style="margin-top:0;">Audit Trail</h2>
+      ${renderHistoryTab(l)}
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
+      <button class="btn btn-sm btn-ghost" id="ld-back-bottom">&larr; Back</button>
+      <button class="btn btn-sm btn-ghost" onclick="window.print()">Print</button>
     </div>`;
 }
 
 function wireLeadDetailViewEvents(){
   const backBtn = document.getElementById('ld-back');
   if(backBtn) backBtn.onclick = closeLeadDetail;
+  const backBtn2 = document.getElementById('ld-back-bottom');
+  if(backBtn2) backBtn2.onclick = closeLeadDetail;
   const l = DB.getLead(currentDetailLeadId);
   if(!l) return;
   wireDetailTabEvents(l);
@@ -4555,7 +4591,8 @@ function renderOverviewTab(l){
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
         <div><label>Project</label><select id="ov-e-project"><option value="" ${!l.projectCode?'selected':''}>— none —</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${p.code===l.projectCode?'selected':''}>${p.code} — ${p.name}</option>`).join('')}</select></div>
-        <div><label>Assigned Executive</label>${canAssign
+        <div><label>Lead Created By</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
+        <div><label>Lead Owner (Assigned)</label>${canAssign
           ? `<select id="ov-e-exec"><option value="${l.assignedExecutive||''}" selected>${l.assignedExecutive||'— unassigned —'} (current)</option>${targets.map(u=>`<option value="${u.name}">${u.name}${u.designation?' — '+u.designation:''}</option>`).join('')}</select>`
           : `<input type="text" value="${l.assignedExecutive||'—'}" disabled title="You can't reassign this lead.">`}</div>
         <div><label>Reassign Remarks</label><input type="text" id="ov-e-exec-remarks" placeholder="Only used if the executive changes"></div>
@@ -4595,7 +4632,8 @@ function renderOverviewTab(l){
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
       <div><label>Project</label><div>${projectLabel(l.projectCode)}</div></div>
-      <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
+      <div><label>Lead Created By</label><div>${leadCreatorName(l)}</div></div>
+      <div><label>Lead Owner (Assigned)</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
       <div><label>Survey Number</label><div>${l.surveyNumber||'—'}</div></div>
       <div><label>Land Classification Type</label><div>${l.landClassification||'—'}</div></div>
@@ -4621,41 +4659,6 @@ function renderOverviewTab(l){
 // exists purely because Workflow Config has a row for it). Field ids for
 // fwd/back are kept exactly as before (unchanged by this extra-destinations
 // feature); extra slots get their own suffixed ids so several can coexist.
-function transitionFieldIds(slot){
-  if(slot==='fwd')  return { btnId:'advance-btn', approverId:'gate-approver-fwd',  remarksId:'gate-remarks-fwd',  priceId:'gate-final-price', dateId:'gate-final-date' };
-  if(slot==='back') return { btnId:'back-btn',    approverId:'gate-approver-back', remarksId:'gate-remarks-back', priceId:'gate-final-price', dateId:'gate-final-date' };
-  return { btnId:'move-btn-'+slot, approverId:'gate-approver-'+slot, remarksId:'gate-remarks-'+slot, priceId:'gate-final-price-'+slot, dateId:'gate-final-date-'+slot };
-}
-function renderTransitionBlock(fromKey, target, slot, l){
-  if(!target) return '';
-  const ids = transitionFieldIds(slot);
-  const isBack = slot === 'back';
-  const isExtra = slot.indexOf('extra') === 0;
-  const gated = isGatedTransition(fromKey, target.key);
-  const isClosing = target.key==='closed';
-  const btnClass = isBack ? 'btn-ghost' : 'btn-teal';
-  const btnLabel = isClosing ? 'Close as Acquired' : (isBack ? `Move back to ${target.label}` : `Move to ${target.label}`);
-  if(!gated){
-    // Only the built-in adjacent fwd/back moves can ever reach here ungated
-    // — an extra slot only exists because Workflow Config has a row for it.
-    return `<div style="margin-bottom:14px;"><button class="btn btn-sm ${btnClass}" id="${ids.btnId}">${btnLabel}</button></div>`;
-  }
-  const canApprove = !currentUser || roleAllowedForGate(currentUser.role, fromKey, target.key);
-  const legend = isClosing ? 'Gate: Sign-off to close as Acquired' : `Gate: Approval to move ${isBack ? 'back to' : (isExtra ? 'to' : 'into')} ${target.label}`;
-  return `<fieldset><legend>${legend}</legend>
-    ${canApprove ? `
-    <div class="form-grid">
-      <div><label>Approved by</label><input type="text" id="${ids.approverId}" value="${(currentUser&&currentUser.name)||''}" placeholder="${isClosing ? 'MD / Approver name' : 'Approver name'}"></div>
-      ${isClosing ? `
-      <div><label>Final Price</label><input type="number" id="${ids.priceId}" step="0.01" value="${l.priceValue||''}"></div>
-      <div><label>Final Date</label><input type="date" id="${ids.dateId}" value="${todayStr()}"></div>
-      ` : ''}
-      <div><label>Remarks</label><input type="text" id="${ids.remarksId}"></div>
-    </div>
-    <button class="btn btn-sm btn-teal" id="${ids.btnId}" style="margin-top:8px;">${btnLabel}</button>
-    ` : `<p style="font-size:12.5px;color:var(--muted);">Only ${gateRoleLabels(fromKey, target.key)} (or Head) can approve this transition (see Workflow Config).</p>`}
-  </fieldset>`;
-}
 // Any Workflow Config row whose From is this lead's current stage and whose
 // To ISN'T the built-in next/prev stage is an extra, non-adjacent move (e.g.
 // a straight "drop to Closed" from partway through the pipeline). Closed is
@@ -4667,17 +4670,84 @@ function extraTransitionTargets(l, next, prev){
   return tos.map(k=>STAGES.find(s=>s.key===k)).filter(Boolean);
 }
 
-function renderStageTab(l){
+// ---- Status — IN4Suite-style "Change Status" ------------------------------
+// Shows the current status with a "Change Status" link (Sara's reference:
+// IN4Suite Land → Status: Signoff  Change Status → [Select One] → Approver
+// Remarks → Update Status). The dropdown lists every status this lead can
+// move to from here: the next and previous status, any extra destinations
+// Workflow Config adds, and "Dropped". A status that needs an approval this
+// user can't give is shown but disabled. Every change is recorded in the
+// Audit Trail at the bottom of the page with who/when/remarks/documents.
+let changeStatusMode = false;
+function statusTargets(l){
+  if(l.stage==='closed') return [];
   const idx = STAGE_INDEX[l.stage];
   const next = STAGES[idx+1];
-  // Closed is terminal — no move-back out of it, matching the outcome
-  // (Acquired/Dropped) already being final.
-  const canGoBack = idx > 0 && l.stage !== 'closed';
-  const prev = canGoBack ? STAGES[idx-1] : null;
+  const prev = idx > 0 ? STAGES[idx-1] : null;
+  const list = [];
+  if(next) list.push({ key: next.key, label: next.key==='closed' ? 'Closed — Acquired' : next.label, dir:'Advanced' });
+  if(prev) list.push({ key: prev.key, label: prev.label + ' (move back)', dir:'Moved back a stage' });
+  extraTransitionTargets(l, next, prev).forEach(t => list.push({ key: t.key, label: t.key==='closed' ? 'Closed — Acquired' : t.label, dir:'Moved' }));
+  list.forEach(t => {
+    t.gated = isGatedTransition(l.stage, t.key);
+    t.allowed = !t.gated || !currentUser || roleAllowedForGate(currentUser.role, l.stage, t.key);
+  });
+  list.push({ key:'__drop', label:'Dropped (close this lead)', dir:'Dropped', gated:false, allowed:true });
+  return list;
+}
+function renderStageTab(l){
   const holdReasons = DB.getMasters('holdReasons');
   const dropReasons = DB.getMasters('dropReasons');
+  const targets = statusTargets(l);
 
-  const holdBlock = `
+  const outcome = l.stage==='closed'
+    ? (l.outcome==='acquired'
+        ? `<span class="badge badge-ok">Acquired</span> <span style="font-size:12.5px;color:var(--muted);">on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.priceUnit]?.label||''}${l.approval&&l.approval.approver?' · approved by '+l.approval.approver:''}</span>`
+        : `<span class="badge badge-danger">Dropped</span> <span style="font-size:12.5px;color:var(--muted);">${l.reasonCode||''}${l.reasonNotes?': '+l.reasonNotes:''}</span>`)
+    : '';
+
+  const statusRow = `
+    <div class="form-grid" style="margin-bottom:10px;">
+      <div class="full" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <label style="margin:0;">Status</label>
+        <span class="badge badge-navy" style="font-size:12.5px;padding:4px 12px;">${stageLabel(l.stage)}</span>
+        ${outcome}
+        ${targets.length && !changeStatusMode ? `<a href="#" id="cs-open" style="color:var(--teal);font-weight:700;font-size:13px;">Change Status</a>` : ''}
+      </div>
+    </div>`;
+
+  const changeForm = (targets.length && changeStatusMode) ? `
+    <fieldset><legend>Change Status</legend>
+      <div class="form-grid">
+        <div class="full"><label>New Status</label>
+          <select id="cs-target">
+            <option value="">[Select One]</option>
+            ${targets.map(t=>`<option value="${t.key}" ${t.allowed?'':'disabled'}>${t.label}${t.gated?(t.allowed?' — needs approval':' — only '+gateRoleLabels(l.stage,t.key)+' can approve'):''}</option>`).join('')}
+          </select>
+        </div>
+        <div id="cs-closing" class="full" style="display:none;">
+          <div class="form-grid">
+            <div><label>Final Price (per ${EXTENT_UNITS[l.priceUnit]?.label||'unit'})</label><input type="number" id="cs-final-price" step="0.01" value="${l.priceValue||''}"></div>
+            <div><label>Final Date</label><input type="date" id="cs-final-date" value="${todayStr()}"></div>
+          </div>
+        </div>
+        <div id="cs-drop" class="full" style="display:none;">
+          <div class="form-grid">
+            <div><label>Drop Reason</label><select id="cs-drop-reason">${dropReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
+          </div>
+        </div>
+        <div class="full"><label>Approver Remarks</label><textarea id="cs-remarks" rows="3" placeholder="Remarks for this status change (shown in the Audit Trail)"></textarea></div>
+        <div class="full"><label>Documents for the new status (optional)</label>
+          ${docUploadFieldsHtml('mv')}
+        </div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button class="btn btn-sm btn-teal" id="cs-update">Update Status</button>
+        <button class="btn btn-sm btn-ghost" id="cs-cancel">Cancel</button>
+      </div>
+    </fieldset>` : '';
+
+  const holdBlock = l.stage==='closed' ? '' : `
     <fieldset>
       <legend>On Hold</legend>
       ${l.onHold && l.onHold.active ? `
@@ -4691,35 +4761,7 @@ function renderStageTab(l){
         <button class="btn btn-sm btn-ghost" id="hold-btn" style="margin-top:8px;">Put On Hold</button>
       `}
     </fieldset>`;
-  const extraTargets = extraTransitionTargets(l, next, prev);
-  const extraBlock = extraTargets.map((t,i)=>renderTransitionBlock(l.stage, t, 'extra-'+i, l)).join('');
-  const gateBlock = renderTransitionBlock(l.stage, next, 'fwd', l) + renderTransitionBlock(l.stage, prev, 'back', l) + extraBlock;
-
-  const dropBlock = l.stage!=='closed' ? `
-    <fieldset><legend>Drop this Lead</legend>
-      <div class="form-grid">
-        <div><label>Reason</label><select id="drop-reason">${dropReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
-        <div><label>Notes</label><input type="text" id="drop-notes"></div>
-      </div>
-      <button class="btn btn-sm btn-danger" id="drop-btn" style="margin-top:8px;">Close as Dropped</button>
-    </fieldset>` : '';
-
-  const closedSummary = l.stage==='closed' ? `
-    <fieldset><legend>Outcome</legend>
-      ${l.outcome==='acquired'
-        ? `<p style="font-size:13px;">Acquired on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.priceUnit]?.label}. Approved by ${l.approval && l.approval.approver||'—'}.</p>`
-        : `<p style="font-size:13px;">Dropped — <b>${l.reasonCode||'—'}</b>${l.reasonNotes?': '+l.reasonNotes:''}</p>`}
-    </fieldset>` : '';
-
-  // One optional upload shared by every status move above (and Drop): pick
-  // the documents for the status you're moving INTO, then click the move —
-  // they're saved under that new status (see collectDocUploads()).
-  const moveDocs = l.stage!=='closed' ? `
-    <fieldset><legend>Documents for the status change (optional)</legend>
-      <p style="font-size:12px;color:var(--muted);margin:0 0 6px;">Choose the documents first, then click a Move / Close button — they're filed under the status the lead moves into.</p>
-      ${docUploadFieldsHtml('mv')}
-    </fieldset>` : '';
-  return `${moveDocs}${gateBlock}${holdBlock}${dropBlock}${closedSummary}`;
+  return `${statusRow}${changeForm}${holdBlock}`;
 }
 
 // ---- Documents (by status) -------------------------------------------------
@@ -4793,25 +4835,25 @@ function renderDocumentsSection(l){
     </fieldset>`;
 }
 
+// Audit Trail — shown at the END of the Lead Details page (Sara's reference:
+// IN4Suite's Audit Trail table — Status / By / Date / Remarks). Every status
+// change, hold/resume and reassignment, newest first.
 function renderHistoryTab(l){
-  const items = (l.stageHistory||[]).slice().reverse().map(h=>
-    `<div class="history-item"><b>${stageLabel(h.stage)}</b> — ${h.note||''}<div class="when">${fmtDate(h.at)} · ${h.by||''}</div></div>`
-  ).join('') || '<div class="empty">No history recorded.</div>';
-  // Reassignment audit trail — every entry DB.reassignLead() has ever
-  // appended, oldest-last, same as the stage history above. Never trimmed
-  // or overwritten (see reassignLead()), so a lead reassigned several
-  // times keeps every prior entry here.
-  // fromManager/toManager are the current fields (reassignment can now
-  // cross branches); older entries only have a single `manager` field from
-  // back when the target pool was same-Manager-only — fall back to that so
-  // pre-existing seed/history entries still render correctly.
-  const reassignItems = (l.reassignmentHistory||[]).slice().reverse().map(r=>{
-    const fromMgr = r.fromManager || r.manager || '—';
-    const toMgr = r.toManager || r.manager || '—';
-    const mgrLabel = fromMgr===toMgr ? `Manager: ${fromMgr}` : `Manager: ${fromMgr} → ${toMgr}`;
-    return `<div class="history-item"><b>Reassigned</b> — ${r.fromExecutive} → ${r.toExecutive} (${mgrLabel})${r.remarks?': '+r.remarks:''}<div class="when">${fmtDate(r.reassignedAt)} · by ${r.reassignedBy||''} · status stayed ${r.currentStatus||'Frozen'}</div></div>`;
-  }).join('');
-  return items + reassignItems;
+  const rows = [];
+  (l.stageHistory||[]).forEach(h => rows.push({
+    at: h.at, status: stageLabel(h.stage) + (h.stage==='closed' && h.note && /Dropped/.test(h.note) ? ' (Dropped)' : (h.stage==='closed' && /Acquired/.test(h.note||'') ? ' (Acquired)' : '')),
+    by: h.by || '', remarks: h.remarks || h.note || '', docs: h.docNames || [],
+  }));
+  (l.holdHistory||[]).forEach(h => rows.push({ at:h.at, status: h.action, by:h.by||'', remarks: [h.reason, h.notes].filter(Boolean).join(' — '), docs:[] }));
+  (l.reassignmentHistory||[]).forEach(r => rows.push({
+    at: r.reassignedAt, status:'Reassigned', by: r.reassignedBy||'',
+    remarks: `${r.fromExecutive||'—'} → ${r.toExecutive||'—'}${r.remarks?' · '+r.remarks:''}`, docs:[],
+  }));
+  rows.sort((a,b)=> new Date(b.at||0) - new Date(a.at||0));
+  const fmtDT = d => { const dt = new Date((d && d.toDate) ? d.toDate() : d); return isNaN(dt) ? '—' : dt.toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'}); };
+  const body = rows.map(r=>`<tr><td><b>${r.status}</b></td><td>${r.by||'—'}</td><td style="white-space:nowrap;">${fmtDT(r.at)}</td><td>${r.remarks||'—'}</td><td>${r.docs.length ? r.docs.join(', ') : '—'}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="empty">No history recorded.</td></tr>';
+  return `<div style="overflow-x:auto;"><table><tr><th>Status</th><th>By</th><th>Date</th><th>Remarks</th><th>Documents</th></tr>${body}</table></div>`;
 }
 
 function wireDetailTabEvents(l){
@@ -4834,7 +4876,7 @@ function wireDetailTabEvents(l){
       const geo = readPickerGeo('ov-e');
       const patch = Object.assign({
         leadSource: (val('ov-e-source')||'').trim(),
-        leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime,
+        leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime || '',
         channelPartnerCode: (val('ov-e-cp')||'').trim(),
         projectCode: (val('ov-e-project')||'').trim(),
         village: (val('ov-e-village')||'').trim(),
@@ -4873,71 +4915,66 @@ function wireDetailTabEvents(l){
     };
   }
   {
-    // Status moves — the built-in next/previous moves plus any extra
-    // destinations Workflow Config adds. Any documents chosen in the shared
-    // "Documents for the status change" box are uploaded and filed under
-    // the status the lead moves INTO.
-    function wireMove(slot, targetKey, noteVerb){
-      const ids = transitionFieldIds(slot);
-      const btn = document.getElementById(ids.btnId);
-      if(!btn) return;
-      btn.onclick = async () => {
-        const targetLabel = stageLabel(targetKey);
-        const gated = isGatedTransition(l.stage, targetKey);
-        if(gated && currentUser && !roleAllowedForGate(currentUser.role, l.stage, targetKey)){
-          alert('Only ' + gateRoleLabels(l.stage, targetKey) + ' (or Head) can approve this transition.'); return;
-        }
-        const approver = document.getElementById(ids.approverId)?.value.trim();
-        if(gated && !approver){
-          alert('An approver name is required for this transition.'); return;
-        }
-        let newDocs = [];
-        try{ newDocs = await collectDocUploads('mv', l, targetKey); }
-        catch(err){ alert('Document upload failed: ' + err.message + ' — the status was not changed.'); return; }
-        const patch = { stage: targetKey };
-        const note = targetKey==='closed' ? 'Closed as Acquired' : (gated ? ('Approved move to '+targetLabel) : (noteVerb || 'Advanced'));
-        patch.stageHistory = (l.stageHistory||[]).concat([{stage: targetKey, at:new Date().toISOString(), by: approver || (currentUser&&currentUser.name) || l.assignedExecutive, note: note + (newDocs.length ? ' · '+newDocs.length+' document(s) attached' : '')}]);
-        if(newDocs.length) patch.documents = (l.documents||[]).concat(newDocs);
-        if(gated){
-          patch.approval = { approver, date: todayStr(), remarks: document.getElementById(ids.remarksId)?.value.trim()||'' };
-        }
-        if(targetKey==='closed'){
-          patch.outcome = 'acquired';
-          patch.finalPrice = parseFloat(document.getElementById(ids.priceId)?.value)||l.priceValue;
-          patch.finalDate = document.getElementById(ids.dateId)?.value || todayStr();
-        }
-        if(targetKey==='site_visited' && !l.siteVisitDate) patch.siteVisitDate = todayStr();
-        await DB.updateLead(l.id, patch);
-        render();
-      };
-    }
-    const idx = STAGE_INDEX[l.stage];
-    const next = STAGES[idx+1];
-    const prev = idx > 0 && l.stage !== 'closed' ? STAGES[idx-1] : null;
-    if(next) wireMove('fwd', next.key, 'Advanced');
-    if(prev) wireMove('back', prev.key, 'Moved back a stage');
-    extraTransitionTargets(l, next, prev).forEach((t,i) => wireMove('extra-'+i, t.key));
+    const open = document.getElementById('cs-open');
+    if(open) open.onclick = (e) => { e.preventDefault(); changeStatusMode = true; render(); };
+    const cancel = document.getElementById('cs-cancel');
+    if(cancel) cancel.onclick = () => { changeStatusMode = false; render(); };
+    const sel = document.getElementById('cs-target');
+    const syncSel = () => {
+      if(!sel) return;
+      document.getElementById('cs-closing').style.display = sel.value==='closed' ? '' : 'none';
+      document.getElementById('cs-drop').style.display = sel.value==='__drop' ? '' : 'none';
+    };
+    if(sel){ sel.addEventListener('change', syncSel); syncSel(); }
+    const upd = document.getElementById('cs-update');
+    if(upd) upd.onclick = async () => {
+      const key = sel.value;
+      if(!key){ alert('Select the new status.'); return; }
+      const t = statusTargets(l).find(x=>x.key===key);
+      if(!t){ alert('That status is not available from here.'); return; }
+      if(!t.allowed){ alert('Only ' + gateRoleLabels(l.stage, key) + ' (or Head) can approve this change.'); return; }
+      const remarks = document.getElementById('cs-remarks').value.trim();
+      if(t.gated && !remarks){ alert('This change needs approval — enter Approver Remarks.'); return; }
+      if(key==='__drop' && !remarks && !confirm('Drop this lead without remarks?')) return;
+      const stageKey = key==='__drop' ? 'closed' : key;
+      upd.disabled = true;
+      let newDocs = [];
+      try{ newDocs = await collectDocUploads('mv', l, stageKey); }
+      catch(err){ upd.disabled = false; alert('Document upload failed: ' + err.message + ' — the status was not changed.'); return; }
+      const me = (currentUser && currentUser.name) || '';
+      let note;
+      const patch = { stage: stageKey };
+      if(key==='__drop'){
+        const reason = document.getElementById('cs-drop-reason').value;
+        Object.assign(patch, { outcome:'dropped', reasonCode: reason, reasonNotes: remarks });
+        note = 'Dropped — ' + reason;
+      } else if(key==='closed'){
+        Object.assign(patch, { outcome:'acquired',
+          finalPrice: parseFloat(document.getElementById('cs-final-price').value) || l.priceValue || null,
+          finalDate: document.getElementById('cs-final-date').value || todayStr() });
+        note = 'Closed as Acquired';
+      } else {
+        note = t.gated ? ('Approved move to ' + stageLabel(key)) : t.dir;
+      }
+      if(t.gated) patch.approval = { approver: me, date: todayStr(), remarks };
+      if(key==='site_visited' && !l.siteVisitDate) patch.siteVisitDate = todayStr();
+      patch.stageHistory = (l.stageHistory||[]).concat([{ stage: stageKey, at: new Date().toISOString(), by: me || l.assignedExecutive, note, remarks, docNames: newDocs.map(d=>d.name) }]);
+      if(newDocs.length) patch.documents = (l.documents||[]).concat(newDocs);
+      await DB.updateLead(l.id, patch);
+      changeStatusMode = false;
+      render();
+    };
     const holdBtn = document.getElementById('hold-btn');
     if(holdBtn) holdBtn.onclick = async () => {
-      await DB.updateLead(l.id, { onHold: { active:true, reasonCode: document.getElementById('hold-reason').value, notes: document.getElementById('hold-notes').value.trim(), since:new Date().toISOString() } });
+      const reason = document.getElementById('hold-reason').value, notes = document.getElementById('hold-notes').value.trim();
+      await DB.updateLead(l.id, { onHold: { active:true, reasonCode: reason, notes, since:new Date().toISOString() },
+        holdHistory: (l.holdHistory||[]).concat([{ action:'Put On Hold', reason, notes, at:new Date().toISOString(), by:(currentUser&&currentUser.name)||'' }]) });
       render();
     };
     const resumeBtn = document.getElementById('resume-btn');
     if(resumeBtn) resumeBtn.onclick = async () => {
-      await DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' } });
-      render();
-    };
-    const dropBtn = document.getElementById('drop-btn');
-    if(dropBtn) dropBtn.onclick = async () => {
-      const reason = document.getElementById('drop-reason').value;
-      const notes = document.getElementById('drop-notes').value.trim();
-      let newDocs = [];
-      try{ newDocs = await collectDocUploads('mv', l, 'closed'); }
-      catch(err){ alert('Document upload failed: ' + err.message); return; }
-      const patch = { stage:'closed', outcome:'dropped', reasonCode:reason, reasonNotes:notes,
-        stageHistory: (l.stageHistory||[]).concat([{stage:'closed', at:new Date().toISOString(), by:(currentUser&&currentUser.name)||l.assignedExecutive, note:'Dropped — '+reason}]) };
-      if(newDocs.length) patch.documents = (l.documents||[]).concat(newDocs);
-      await DB.updateLead(l.id, patch);
+      await DB.updateLead(l.id, { onHold: { active:false, reasonCode:'', notes:'', since:'' },
+        holdHistory: (l.holdHistory||[]).concat([{ action:'Resumed (hold cleared)', reason:'', notes:'', at:new Date().toISOString(), by:(currentUser&&currentUser.name)||'' }]) });
       render();
     };
   }
@@ -4969,6 +5006,7 @@ function wireViewEvents(){
     document.querySelectorAll('[data-stage]').forEach(el=>el.addEventListener('click', ()=>goToProgress(el.dataset.stage)));
     document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
     document.querySelectorAll('[data-cp]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ channelPartner: el.dataset.cp })));
+    document.querySelectorAll('[data-creator]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ createdBy: el.dataset.creator })));
     document.querySelectorAll('[data-open-id]').forEach(el=>el.addEventListener('click', ()=>openLeadDetail(el.dataset.openId)));
   }
 
