@@ -2280,10 +2280,15 @@ function leadCreatorName(l){
 }
 function isClosed(l){ return l.stage==='closed'; }
 function isActive(l){ return !isClosed(l); }
+// Accepts an ISO string, a Date, or a Firestore Timestamp.
+function toDateSafe(d){ if(!d) return null; const raw = (typeof d==='object' && typeof d.toDate==='function') ? d.toDate() : d; const dt = new Date(raw); return isNaN(dt) ? null : dt; }
+// Days since the lead entered its CURRENT status (the latest status-change
+// entry for that status), falling back to the lead date / created date.
 function daysInStage(l){
-  const last = l.stageHistory && l.stageHistory.length ? l.stageHistory[l.stageHistory.length-1] : null;
-  const since = last ? new Date(last.at) : new Date(l.createdAt);
-  return daysBetween(since, new Date());
+  const hist = (l.stageHistory||[]).filter(h=>h.stage===l.stage && toDateSafe(h.at));
+  const last = hist.length ? hist[hist.length-1] : null;
+  const since = (last && toDateSafe(last.at)) || toDateSafe(l.leadSourceDateTime) || toDateSafe(l.createdAt) || new Date();
+  return Math.max(0, daysBetween(since, new Date()));
 }
 function isOverdueStage(l){
   const st = STAGES.find(s=>s.key===l.stage);
@@ -2413,11 +2418,22 @@ function renderDashboard(){
       <span class="badge badge-${info.type==='danger'?'danger':info.type==='warn'?'warn':'muted'}">${info.text} · ${fmtDate(l.nextCallDate)}</span></div>`;
   }).join('') || '<div class="empty">No upcoming calls scheduled</div>';
 
-  const ageingList = ageingAlerts.slice(0,8).map(l=>{
-    const st = STAGES.find(s=>s.key===l.stage);
-    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.village} <span style="color:var(--muted)">(${st.label})</span></span>
-      <span class="badge badge-danger">${daysInStage(l)}d in stage (SLA ${st.sla}d)</span></div>`;
-  }).join('') || '<div class="empty">No leads currently past their stage SLA</div>';
+  // Ageing = how long each active lead has been sitting in its CURRENT
+  // status (resets whenever the status changes), against that status's SLA
+  // from Status Config. Different from Call Reminders, which is about the
+  // Follow Up Date. Leads past SLA come first (red); the rest of the oldest
+  // leads still show, so this list is never blank while leads are open.
+  const ageingSorted = active.slice().sort((a,b)=>{
+    const ao = isOverdueStage(a) ? 1 : 0, bo = isOverdueStage(b) ? 1 : 0;
+    return (bo - ao) || (daysInStage(b) - daysInStage(a));
+  });
+  const ageingList = ageingSorted.slice(0,8).map(l=>{
+    const st = STAGES.find(s=>s.key===l.stage) || { label: stageLabel(l.stage), sla:null };
+    const d = daysInStage(l), over = isOverdueStage(l);
+    const slaTxt = st.sla==null ? 'no SLA set' : ('SLA ' + st.sla + 'd');
+    return `<div class="callitem" data-open-id="${l.id}"><span><b>${l.leadId}</b> — ${l.landIdentificationName||l.village||l.siteLocation||'—'} <span style="color:var(--muted)">(${st.label})</span></span>
+      <span class="badge ${over?'badge-danger':'badge-muted'}">${d}d in ${st.label} · ${over ? 'past ' : ''}${slaTxt}</span></div>`;
+  }).join('') || '<div class="empty">No active leads</div>';
 
   return `
     <div class="page-header">
@@ -2453,8 +2469,8 @@ function renderDashboard(){
         <div class="card">${callList}</div>
       </div>
       <div>
-        <h2 class="section-title">Ageing Alerts <span class="tag" style="background:var(--danger)">Past stage SLA</span></h2>
-        <div class="card">${ageingList}</div>
+        <h2 class="section-title">Ageing Alerts <span class="tag" style="background:${ageingAlerts.length?'var(--danger)':'var(--ok)'}">${ageingAlerts.length} past status SLA</span></h2>
+        <div class="card"><div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Days in the current status vs. its SLA (Status Config). Call Reminders track the Follow Up Date instead.</div>${ageingList}</div>
       </div>
     </div>
 
