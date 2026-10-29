@@ -74,6 +74,27 @@
      whole screen beside the sidebar (Sara: "Website is have to like Full page
      module — we find multiple gaps in multiple pages"). */
   main{padding:20px 24px 60px;width:100%;}
+  /* Sales-Dashboard-style chart pages */
+  .dash-h1{font-family:Georgia,'Times New Roman',serif;color:#E8812F;font-size:22px;font-weight:400;margin:26px 0 6px;display:flex;align-items:center;gap:12px;}
+  .dash-h1::after{content:'';flex:1;height:1px;background:var(--border);}
+  .dash-h2{font-family:Georgia,'Times New Roman',serif;color:var(--navy);font-size:14px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;margin:16px 0 10px;display:flex;align-items:center;gap:12px;}
+  .dash-h2::after{content:'';flex:1;height:1px;background:var(--border);}
+  .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:6px;}
+  .chart-card{padding:16px 18px;}
+  .chart-title{font-size:13.5px;font-weight:600;color:var(--navy);margin-bottom:10px;}
+  .chart-sub{font-size:11.5px;color:var(--muted);margin:-6px 0 8px;}
+  svg.chart{width:100%;height:auto;display:block;overflow:visible;}
+  svg.chart .ch-lbl{font-size:12px;fill:#3d4554;}
+  svg.chart .ch-val{font-size:11.5px;font-weight:700;fill:var(--navy);font-variant-numeric:tabular-nums;}
+  svg.chart .ch-axis{font-size:11px;fill:var(--muted);}
+  svg.chart .ch-in{font-size:11px;font-weight:700;fill:#fff;pointer-events:none;}
+  svg.chart .ch-big{font-size:28px;font-weight:700;fill:var(--navy);pointer-events:none;}
+  svg.chart .donut-label{pointer-events:none;}
+  svg.chart .ch-hit{cursor:pointer;}
+  svg.chart .ch-hit:hover path, svg.chart .ch-hit:hover circle{opacity:.85;}
+  #ch-tip{position:fixed;display:none;z-index:300;background:#1F2430;color:#fff;font-size:12px;padding:6px 9px;border-radius:6px;pointer-events:none;max-width:320px;box-shadow:0 4px 14px rgba(0,0,0,.18);}
+  .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;}
+  @media (max-width:980px){ .chart-grid{grid-template-columns:1fr;} }
   .save-menu{position:relative;display:inline-block;}
   .save-list{display:none;position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:50;min-width:210px;padding:4px 0;}
   .save-list.open{display:block;}
@@ -2325,6 +2346,127 @@ function leadMatchesFilters(l, f){
   return true;
 }
 
+// ---- Charts (hand-drawn SVG, no library) ------------------------------------
+// Styled after the MP Developers Sales Dashboard: indigo + orange, value on
+// each bar, rounded data-ends, hover tooltips, click a bar to drill into the
+// matching leads. Palette validated (light surface): indigo #4A3AA7,
+// orange #E8812F, green #1BAF7A — every bar also carries a visible value.
+const BRAND = { indigo:'#4A3AA7', orange:'#E8812F', green:'#1BAF7A', grid:'#E8ECF2', ink:'#1F2430', muted:'#6B7280' };
+function chEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function chFmt(n){ if(n==null||isNaN(n)) return '—'; const a=Math.abs(n); return a>=1000 ? Number(n).toLocaleString('en-IN',{maximumFractionDigits:0}) : (Number.isInteger(n)? String(n) : Number(n).toFixed(a<10?2:1)); }
+function chAttrs(a){ return a ? Object.entries(a).map(([k,v])=>` ${k}="${chEsc(v)}"`).join('') : ''; }
+// Rounded at the data end only (square at the baseline).
+function hBarPath(x,y,w,h,r){ r=Math.min(r,w,h/2); if(w<=0) return ''; return `M${x},${y}H${x+w-r}Q${x+w},${y} ${x+w},${y+r}V${y+h-r}Q${x+w},${y+h} ${x+w-r},${y+h}H${x}Z`; }
+function vBarPath(x,y,w,h,r){ r=Math.min(r,h,w/2); if(h<=0) return ''; return `M${x},${y+h}V${y+r}Q${x},${y} ${x+r},${y}H${x+w-r}Q${x+w},${y} ${x+w},${y+r}V${y+h}Z`; }
+function chartCard(title, body, sub){ return `<div class="card chart-card"><div class="chart-title">${title}</div>${sub?`<div class="chart-sub">${sub}</div>`:''}${body}</div>`; }
+function chartEmpty(msg){ return `<div class="empty" style="padding:30px 0;text-align:center;">${msg||'No data yet'}</div>`; }
+function niceMax(v){ if(v<=0) return 1; const p=Math.pow(10,Math.floor(Math.log10(v))); const f=v/p; return (f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*p; }
+
+// items: [{label, value, attrs?, tip?}]
+function hBarChart(items, opts){
+  opts = opts||{}; const color = opts.color||BRAND.indigo; const unit = opts.unit||'';
+  items = items.filter(i=>i.value>0); if(!opts.keepOrder) items = items.slice().sort((a,b)=>b.value-a.value); items = items.slice(0, opts.max||15);
+  if(!items.length) return chartEmpty(opts.empty);
+  const W=640, labelW=170, valW=70, rowH=28, barH=16, top=4;
+  const plotW = W-labelW-valW, max = Math.max(...items.map(i=>i.value));
+  const H = top + items.length*rowH + 4;
+  const rows = items.map((it,i)=>{
+    const y = top + i*rowH, w = Math.max(2, it.value/max*plotW);
+    const tip = it.tip || `${it.label}: ${chFmt(it.value)}${unit}`;
+    return `<g class="ch-hit"${chAttrs(it.attrs)} data-tip="${chEsc(tip)}">
+      <rect x="0" y="${y}" width="${W}" height="${rowH}" fill="transparent"/>
+      <text x="${labelW-10}" y="${y+rowH/2}" text-anchor="end" dominant-baseline="central" class="ch-lbl">${chEsc(it.label.length>24?it.label.slice(0,23)+'…':it.label)}</text>
+      <path d="${hBarPath(labelW, y+(rowH-barH)/2, w, barH, 4)}" fill="${it.color||color}"/>
+      <text x="${labelW+w+6}" y="${y+rowH/2}" dominant-baseline="central" class="ch-val">${chFmt(it.value)}${unit}</text></g>`;
+  }).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet"><line x1="${labelW}" y1="0" x2="${labelW}" y2="${H}" stroke="${BRAND.grid}"/>${rows}</svg>`;
+}
+// items: [{label, value, attrs?, tip?}] — columns over categories/time.
+function vBarChart(items, opts){
+  opts = opts||{}; const color = opts.color||BRAND.orange; const unit = opts.unit||'';
+  if(!items.length || !items.some(i=>i.value>0)) return chartEmpty(opts.empty);
+  const W=640, H=280, left=40, bottom=items.length>6?64:30, top=22, right=8;
+  const rawMax = Math.max(...items.map(i=>i.value));
+  const allInt = items.every(i=>Number.isInteger(i.value));
+  const plotW=W-left-right, plotH=H-top-bottom, max = allInt ? Math.max(4, Math.ceil(rawMax/4)*4) : niceMax(rawMax);
+  const slot=plotW/items.length, bw=Math.min(48, slot*0.62);
+  const ticks=[0,0.25,0.5,0.75,1].map(f=>{ const y=top+plotH-f*plotH; return `<line x1="${left}" y1="${y}" x2="${W-right}" y2="${y}" stroke="${BRAND.grid}"/><text x="${left-6}" y="${y}" text-anchor="end" dominant-baseline="central" class="ch-axis">${chFmt(max*f)}</text>`; }).join('');
+  const bars = items.map((it,i)=>{
+    const h = it.value/max*plotH, x = left + i*slot + (slot-bw)/2, y = top+plotH-h;
+    const tip = it.tip || `${it.label}: ${chFmt(it.value)}${unit}`;
+    const lx = left + i*slot + slot/2, ly = top+plotH+12;
+    const lbl = items.length>6 ? `<text transform="translate(${lx},${ly}) rotate(-35)" text-anchor="end" class="ch-axis">${chEsc(it.label)}</text>` : `<text x="${lx}" y="${ly}" text-anchor="middle" class="ch-axis">${chEsc(it.label)}</text>`;
+    return `<g class="ch-hit"${chAttrs(it.attrs)} data-tip="${chEsc(tip)}"><rect x="${left+i*slot}" y="${top}" width="${slot}" height="${plotH}" fill="transparent"/>
+      ${it.value>0?`<path d="${vBarPath(x,y,bw,h,4)}" fill="${it.color||color}"/><text x="${x+bw/2}" y="${y-6}" text-anchor="middle" class="ch-val">${chFmt(it.value)}${unit}</text>`:''}${lbl}</g>`;
+  }).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">${ticks}${bars}</svg>`;
+}
+// items: [{label, parts:[n...], attrs?}], series: [{name,color}]
+function stackedHBarChart(items, series, opts){
+  opts = opts||{};
+  items = items.filter(i=>i.parts.some(v=>v>0)).slice(0, opts.max||15);
+  if(!items.length) return chartEmpty(opts.empty);
+  const W=640, labelW=170, valW=50, rowH=30, barH=18, top=4;
+  const plotW=W-labelW-valW, max=Math.max(...items.map(i=>i.parts.reduce((a,b)=>a+b,0)));
+  const H = top+items.length*rowH+4;
+  const rows = items.map((it,i)=>{
+    const y=top+i*rowH, total=it.parts.reduce((a,b)=>a+b,0); let x=labelW;
+    const nz = it.parts.map((v,k)=>({v,k})).filter(p=>p.v>0);
+    const segs = nz.map((p,idx)=>{
+      const w = p.v/max*plotW, last = idx===nz.length-1, gap = last?0:2;
+      const segW = Math.max(1, w-gap);
+      const d = last ? hBarPath(x, y+(rowH-barH)/2, segW, barH, 4) : `M${x},${y+(rowH-barH)/2}h${segW}v${barH}h${-segW}Z`;
+      const inLbl = segW >= 22 ? `<text x="${x+segW/2}" y="${y+rowH/2}" text-anchor="middle" dominant-baseline="central" class="ch-in">${p.v}</text>` : '';
+      x += w; return `<path d="${d}" fill="${series[p.k].color}"/>${inLbl}`;
+    }).join('');
+    const tip = `${it.label} — ` + series.map((s,k)=>`${s.name}: ${it.parts[k]}`).join(', ') + ` (total ${total})`;
+    return `<g class="ch-hit"${chAttrs(it.attrs)} data-tip="${chEsc(tip)}"><rect x="0" y="${y}" width="${W}" height="${rowH}" fill="transparent"/>
+      <text x="${labelW-10}" y="${y+rowH/2}" text-anchor="end" dominant-baseline="central" class="ch-lbl">${chEsc(it.label)}</text>${segs}
+      <text x="${x+6}" y="${y+rowH/2}" dominant-baseline="central" class="ch-val">${total}</text></g>`;
+  }).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">${rows}</svg>${chartLegend(series)}`;
+}
+function chartLegend(series){ return `<div class="donut-legend" style="margin-top:6px;">${series.map(s=>`<span class="legend-item"><span class="legend-swatch" style="background:${s.color}"></span>${chEsc(s.name)}</span>`).join('')}</div>`; }
+// segs: [{label, value, color, attrs?}]
+function donutChart(segs, opts){
+  opts = opts||{};
+  const total = segs.reduce((a,s)=>a+s.value,0);
+  if(!total) return chartEmpty(opts.empty);
+  const S=240, c=S/2, R=100, sw=40, r=R-sw/2, C=2*Math.PI*r; let cum=0;
+  const arcs = segs.filter(s=>s.value>0).map(s=>{
+    const pct=s.value/total, len=Math.max(0, pct*C-2);
+    const mid=(-90+(cum+pct/2)*360)*Math.PI/180, lx=c+r*Math.cos(mid), ly=c+r*Math.sin(mid);
+    const out = `<g class="ch-hit"${chAttrs(s.attrs)} data-tip="${chEsc(`${s.label}: ${s.value} (${Math.round(pct*100)}%)`)}"><circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${sw}" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-cum*C}" transform="rotate(-90 ${c} ${c})"/>
+      ${pct>=0.05?`<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" dominant-baseline="central" class="donut-label" fill="${readableTextOn(s.color)}">${s.value}</text>`:''}</g>`;
+    cum+=pct; return out;
+  }).join('');
+  const center = `<text x="${c}" y="${c-6}" text-anchor="middle" class="ch-big">${total}</text><text x="${c}" y="${c+14}" text-anchor="middle" class="ch-axis">${chEsc(opts.centerLabel||'total')}</text>`;
+  return `<div class="donutwrap"><svg class="chart" viewBox="0 0 ${S} ${S}" style="max-width:260px;">${arcs}${center}</svg>
+    <div class="donut-legend">${segs.map(s=>`<span class="legend-item"${chAttrs(s.attrs)}><span class="legend-swatch" style="background:${s.color}"></span>${chEsc(s.label)} (${s.value})</span>`).join('')}</div></div>`;
+}
+(function wireChartTooltipOnce(){
+  const tip = document.createElement('div'); tip.id = 'ch-tip'; document.body.appendChild(tip);
+  document.addEventListener('mousemove', e => {
+    const t = e.target.closest && e.target.closest('[data-tip]');
+    if(!t){ tip.style.display='none'; return; }
+    tip.textContent = t.getAttribute('data-tip'); tip.style.display='block';
+    const x = Math.min(e.clientX+14, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = x+'px'; tip.style.top = (e.clientY+14)+'px';
+  });
+})();
+// Shared data helpers for Dashboard + MIS Analytics
+function acres(l){ return sqftToUnit(leadExtentSqft(l),'acre'); }
+function cpName(code){ const c = DB.getAllMasters('channelPartners').find(x=>x.code===code); return c ? c.name : code; }
+function groupCount(leads, keyFn){ const m = {}; leads.forEach(l=>{ const k = keyFn(l); if(k==null||k==='') return; m[k]=(m[k]||0)+1; }); return Object.entries(m).sort((a,b)=>b[1]-a[1]); }
+function fyOf(d){ const dt = toDateSafe(d); if(!dt) return null; const y = dt.getMonth()>=3 ? dt.getFullYear() : dt.getFullYear()-1; return 'FY'+y+'-'+String((y+1)%100).padStart(2,'0'); }
+function last12Months(){ const out=[]; const d=new Date(); d.setDate(1); for(let i=11;i>=0;i--){ const x=new Date(d.getFullYear(), d.getMonth()-i, 1); out.push({ key: x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0'), label: x.toLocaleDateString('en-IN',{month:'short'})+' '+String(x.getFullYear()).slice(2) }); } return out; }
+function ownerStack(leads){
+  const m = {};
+  leads.forEach(l=>{ const n = leadCreatorName(l); m[n] = m[n] || [0,0,0]; if(l.outcome==='acquired') m[n][1]++; else if(l.outcome==='dropped') m[n][2]++; else m[n][0]++; });
+  return Object.entries(m).sort((a,b)=>(b[1][0]+b[1][1]+b[1][2])-(a[1][0]+a[1][1]+a[1][2])).map(([label,parts])=>({ label, parts, attrs:{'data-creator':label} }));
+}
+const OUTCOME_SERIES = [{name:'Active', color:BRAND.indigo},{name:'Acquired', color:BRAND.green},{name:'Dropped', color:BRAND.orange}];
+
 // ---- DASHBOARD -----------------------------------------------------------
 function renderDashboard(){
   const leads = visibleLeads();
@@ -2435,57 +2577,65 @@ function renderDashboard(){
       <span class="badge ${over?'badge-danger':'badge-muted'}">${d}d in ${st.label} · ${over ? 'past ' : ''}${slaTxt}</span></div>`;
   }).join('') || '<div class="empty">No active leads</div>';
 
+  // ---- Charts ----
+  // Only statuses that actually hold leads get a slice (in pipeline order),
+  // so the 8 validated colours are never recycled; a 9th+ folds into "Other".
+  const nonEmpty = STAGES.map(s=>({ s, n: leads.filter(l=>l.stage===s.key).length })).filter(x=>x.n>0);
+  const head = nonEmpty.length > 8 ? nonEmpty.slice(0,7) : nonEmpty;
+  const stageSegs = head.map((x,i)=>({ label:x.s.label, value:x.n, color: DONUT_PALETTE[i], attrs:{'data-stage':x.s.key} }));
+  if(nonEmpty.length > 8) stageSegs.push({ label:'Other', value: nonEmpty.slice(7).reduce((a,x)=>a+x.n,0), color:'#9AA3B2' });
+  const months = last12Months();
+  const inflow = months.map(m=>({ label:m.label, value: leads.filter(l=>String(l.leadSourceDateTime||'').slice(0,7)===m.key).length }));
+  const sourceItems = groupCount(leads, l=>l.leadSource||'').map(([k,v])=>({ label:k, value:v, attrs:{'data-source':k} }));
+  const cpItems = groupCount(leads, l=>l.channelPartnerCode||'').map(([k,v])=>({ label:cpName(k), value:v, attrs:{'data-cp':k}, tip:`${cpName(k)} (${k}): ${v} lead${v===1?'':'s'}` }));
+  const villageAcres = {}; active.forEach(l=>{ const k = l.village||l.siteLocation||'—'; villageAcres[k] = (villageAcres[k]||0) + acres(l); });
+  const villageItems = Object.entries(villageAcres).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({ label:k, value:Number(v.toFixed(2)) }));
+  const acquired = leads.filter(l=>l.outcome==='acquired').length, dropped = leads.filter(l=>l.outcome==='dropped').length;
+  const activeAcres = active.reduce((s,l)=>s+acres(l),0);
+
   return `
-    <div class="page-header">
-      <h1>Dashboard</h1>
-    </div>
+    <div class="page-header"><h1>Dashboard</h1></div>
 
-    <div class="grid cards4">
-      <div class="card stat" data-drill="active"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total incl. closed — click to view</div></div>
-      <div class="card stat" data-drill="onHold"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">flagged across all stages — click to view</div></div>
+    <div class="kpi-row">
+      <div class="card stat" data-drill="active"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total — click to view</div></div>
+      <div class="card stat" data-drill="active"><div class="label">Active Extent</div><div class="value">${chFmt(Number(activeAcres.toFixed(2)))}</div><div class="sub">acres across open leads</div></div>
+      <div class="card stat"><div class="label">Acquired / Dropped</div><div class="value">${acquired} / ${dropped}</div><div class="sub">closed leads</div></div>
+      <div class="card stat" data-drill="onHold"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">click to view</div></div>
       <div class="card stat" data-drill="calls"><div class="label">Calls Due / Overdue</div><div class="value" style="color:${overdueCalls.length?'var(--danger)':'var(--navy)'}">${dueToday.length} / ${overdueCalls.length}</div><div class="sub">today / overdue — click to view</div></div>
+      <div class="card stat"><div class="label">Past Status SLA</div><div class="value" style="color:${ageingAlerts.length?'var(--danger)':'var(--navy)'}">${ageingAlerts.length}</div><div class="sub">see Ageing Alerts below</div></div>
     </div>
 
-    <h2 class="section-title">Pipeline Funnel <span class="tag">click a stage to view its leads</span></h2>
-    <div class="card">
-      <div class="donut-sub">Lead count by stage — all leads</div>
-      <div class="donutwrap">${donutSvg}<div class="donut-legend">${donutLegend}</div></div>
+    <div class="dash-h1">Overview</div>
+    <div class="dash-h2">Pipeline Position</div>
+    <div class="chart-grid">
+      ${chartCard('Leads by status — all leads', donutChart(stageSegs, {centerLabel:'leads'}), 'Click a slice or legend item to see those leads')}
+      ${chartCard('Lead inflow by month (last 12 months)', vBarChart(inflow, {color:BRAND.orange, empty:'No leads in the last 12 months'}))}
     </div>
 
-    <div class="two-col">
-      <div>
-        <h2 class="section-title">New Leads</h2>
-        <div class="card">${newLeadsList}</div>
-      </div>
-      <div>
-        <h2 class="section-title">Yet to be Site Visited</h2>
-        <div class="card">${yetToSiteVisitList}</div>
-      </div>
+    <div class="dash-h1">Sourcing</div>
+    <div class="dash-h2">Leads by Source &amp; Channel Partner</div>
+    <div class="chart-grid">
+      ${chartCard('Leads by lead source', hBarChart(sourceItems, {color:BRAND.indigo}), 'Click a bar to see those leads')}
+      ${chartCard('Leads by channel partner (top 15)', hBarChart(cpItems, {color:BRAND.orange, empty:'No channel partner leads yet'}), 'Click a bar to see those leads')}
     </div>
 
-    <div class="two-col">
-      <div>
-        <h2 class="section-title">Call Reminders</h2>
-        <div class="card">${callList}</div>
-      </div>
-      <div>
-        <h2 class="section-title">Ageing Alerts <span class="tag" style="background:${ageingAlerts.length?'var(--danger)':'var(--ok)'}">${ageingAlerts.length} past status SLA</span></h2>
-        <div class="card"><div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Days in the current status vs. its SLA (Status Config). Call Reminders track the Follow Up Date instead.</div>${ageingList}</div>
-      </div>
+    <div class="dash-h1">Team &amp; Land</div>
+    <div class="dash-h2">Lead Owners &amp; Active Extent</div>
+    <div class="chart-grid">
+      ${chartCard('Leads by lead owner (created by)', stackedHBarChart(ownerStack(leads), OUTCOME_SERIES), 'Click a bar to see that owner\'s leads')}
+      ${chartCard('Active extent by village (top 15, acres)', hBarChart(villageItems, {color:BRAND.indigo, unit:' ac', empty:'No active leads'}))}
     </div>
 
-    <div class="two-col">
-      <div>
-        <h2 class="section-title">By Lead Source <span class="tag">click a row</span></h2>
-        <div class="card"><table><tr><th>Source</th><th>Count</th><th>%</th></tr>${sourceRows}</table></div>
-      </div>
-      <div>
-        <h2 class="section-title">By Channel Partner <span class="tag">click a row</span></h2>
-        <div class="card"><table><tr><th>Channel Partner</th><th>Count</th></tr>${cpRows}</table></div>
-      </div>
+    <div class="dash-h1">Follow-ups</div>
+    <div class="dash-h2">Calls &amp; Ageing</div>
+    <div class="chart-grid">
+      <div class="card"><div class="chart-title">Call Reminders</div>${callList}</div>
+      <div class="card"><div class="chart-title">Ageing Alerts <span class="tag" style="background:${ageingAlerts.length?'var(--danger)':'var(--ok)'};color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;">${ageingAlerts.length} past status SLA</span></div><div style="font-size:11.5px;color:var(--muted);margin-bottom:6px;">Days in the current status vs. its SLA (Status Config). Call Reminders track the Follow Up Date instead.</div>${ageingList}</div>
     </div>
-    <h2 class="section-title">Leads by Lead Owner (Created By) <span class="tag">click a row</span></h2>
-    <div class="card"><table><tr><th>Lead Owner (Created By)</th><th>Total Leads</th><th>Active</th></tr>${creatorRows}</table></div>
+    <div class="chart-grid" style="margin-top:16px;">
+      <div class="card"><div class="chart-title">New Leads</div>${newLeadsList}</div>
+      <div class="card"><div class="chart-title">Yet to be Site Visited</div>${yetToSiteVisitList}</div>
+    </div>
   `;
 }
 
@@ -2838,9 +2988,66 @@ function renderAnalytics(){
     </tr>`).join('');
   const finHtml = finRows.map(r=>`<tr><td>${r.Metric}</td><td><b>${fmtNum(r.Value)}</b></td></tr>`).join('');
 
+  // ---- Charts (Sales-Dashboard style) ----
+  const leads = visibleLeads();
+  const closedN = leads.filter(l=>l.outcome==='acquired'||l.outcome==='dropped').length;
+  const acquiredN = leads.filter(l=>l.outcome==='acquired').length;
+  const conv = leads.length ? (acquiredN/leads.length*100) : 0;
+  const closeDays = leads.filter(l=>l.outcome==='acquired' && l.finalDate).map(l=>daysBetween(toDateSafe(l.createdAt)||toDateSafe(l.leadSourceDateTime)||new Date(), new Date(l.finalDate)));
+  const avgClose = closeDays.length ? Math.round(closeDays.reduce((a,b)=>a+b,0)/closeDays.length) : null;
+  const fin = Object.fromEntries(finRows.map(r=>[r.Metric, r.Value]));
+  const finVal = k => { const e = Object.entries(fin).find(([m])=>m.indexOf(k)===0); return e ? e[1] : 0; };
+  const srcItems = srcRows.map(r=>({ label:r.Source, value:r['Total Leads'], attrs:{'data-source':r.Source}, tip:`${r.Source}: ${r['Total Leads']} leads, ${r.Acquired} acquired (${r['Conversion %']}%)` }));
+  const cpItems = cpRows.map(r=>{ const code = String(r['Channel Partner']).split(' — ')[0]; return { label: cpName(code), value:r['Leads Sourced'], attrs:{'data-cp':code}, tip:`${r['Channel Partner']}: ${r['Leads Sourced']} leads, ${r.Acquired} acquired` }; });
+  const agingItems = agingRows.map(r=>({ label:r.Stage, value: typeof r['Avg Days In Stage']==='number' ? r['Avg Days In Stage'] : 0, tip:`${r.Stage}: ${r['Leads Currently In Stage']} lead(s), avg ${r['Avg Days In Stage']} days, SLA ${r['SLA (days)']}${r['Overdue (Past SLA)']?' — '+r['Overdue (Past SLA)']+' past SLA':''}` }));
+  const classSegs = groupCount(leads, l=>l.landClassification||'Not set').map(([k,v],i)=>({ label:k, value:v, color: DONUT_PALETTE[i % DONUT_PALETTE.length] }));
+  const fyMap = {}; leads.forEach(l=>{ const fy = fyOf(l.leadSourceDateTime||l.createdAt); if(fy) fyMap[fy]=(fyMap[fy]||0)+1; });
+  const fyItems = Object.keys(fyMap).sort().map(k=>({ label:k, value:fyMap[k] }));
+  const fyAcres = {}; leads.forEach(l=>{ const fy = fyOf(l.leadSourceDateTime||l.createdAt); if(fy) fyAcres[fy]=(fyAcres[fy]||0)+acres(l); });
+  const fyAcreItems = Object.keys(fyAcres).sort().map(k=>({ label:k, value:Number(fyAcres[k].toFixed(2)) }));
+
   return `
     <div class="page-header"><h1>MIS Analytics</h1></div>
-    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Aggregated performance and financial KPIs — for per-record detail, see the Reports page instead. Scoped the same way every other page here is: a Manager sees their own branch's numbers, Head/Admin see everything visible to them.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Scoped like every other page: a Manager sees their own team's numbers, Head/Admin see everything visible to them. Click any bar to see those leads.</p>
+
+    <div class="kpi-row">
+      <div class="card stat"><div class="label">Total Leads</div><div class="value">${leads.length}</div><div class="sub">${leads.length-closedN} active · ${closedN} closed</div></div>
+      <div class="card stat"><div class="label">Conversion</div><div class="value">${conv.toFixed(1)}%</div><div class="sub">${acquiredN} acquired</div></div>
+      <div class="card stat"><div class="label">Avg Days to Close</div><div class="value">${avgClose==null?'—':avgClose}</div><div class="sub">acquired leads</div></div>
+      <div class="card stat"><div class="label">Pipeline Value</div><div class="value">${chFmt(finVal('Pipeline Value'))}</div><div class="sub">open leads, quoted</div></div>
+      <div class="card stat"><div class="label">Landowner Paid</div><div class="value">${fmtINR(finVal('Landowner Payments — Paid'))}</div><div class="sub">of ${fmtINR(finVal('Landowner Payments — Total'))}</div></div>
+      <div class="card stat"><div class="label">Landowner Balance</div><div class="value">${fmtINR(finVal('Landowner Payments — Balance'))}</div><div class="sub">still to pay</div></div>
+    </div>
+
+    <div class="dash-h1">Performance</div>
+    <div class="dash-h2">Lead Owners</div>
+    <div class="chart-grid">
+      ${chartCard('Leads by lead owner — active / acquired / dropped', stackedHBarChart(execRows.map(r=>({ label:r['Lead Owner'], parts:[r.Active, r.Acquired, r.Dropped], attrs:{'data-creator':r['Lead Owner']} })), OUTCOME_SERIES))}
+      ${chartCard('Currently assigned active leads by executive', hBarChart(execRows.map(r=>({ label:r['Lead Owner'], value:r['Currently Assigned (Active)'], attrs:{'data-exec':r['Lead Owner']} })), {color:BRAND.orange, empty:'No active assigned leads'}))}
+    </div>
+
+    <div class="dash-h1">Sourcing</div>
+    <div class="dash-h2">Source &amp; Channel Partner</div>
+    <div class="chart-grid">
+      ${chartCard('Leads by lead source', hBarChart(srcItems, {color:BRAND.indigo}))}
+      ${chartCard('Leads by channel partner (top 15)', hBarChart(cpItems, {color:BRAND.orange, empty:'No channel partner leads yet'}))}
+    </div>
+
+    <div class="dash-h1">Pipeline</div>
+    <div class="dash-h2">Status Ageing &amp; Land Type</div>
+    <div class="chart-grid">
+      ${chartCard('Average days in current status (active leads)', vBarChart(agingItems, {color:BRAND.indigo, unit:'d', empty:'No active leads'}), 'Hover a column for its SLA and how many leads are past it')}
+      ${chartCard('Leads by land classification type', donutChart(classSegs, {centerLabel:'leads'}))}
+    </div>
+
+    <div class="dash-h1">Trend</div>
+    <div class="dash-h2">Leads by Financial Year</div>
+    <div class="chart-grid">
+      ${chartCard('Lead count by financial year', vBarChart(fyItems, {color:BRAND.orange}))}
+      ${chartCard('Land extent by financial year (acres)', vBarChart(fyAcreItems, {color:BRAND.indigo, unit:' ac'}))}
+    </div>
+
+    <div class="dash-h1">Detail Tables</div>
 
     <h2 class="section-title">Executive Performance — by Lead Owner</h2>
     <div class="card" style="margin-bottom:20px;">
@@ -2884,6 +3091,10 @@ function renderAnalytics(){
   `;
 }
 function wireAnalyticsEvents(){
+  document.querySelectorAll('#view-root [data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
+  document.querySelectorAll('#view-root [data-cp]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ channelPartner: el.dataset.cp })));
+  document.querySelectorAll('#view-root [data-creator]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ createdBy: el.dataset.creator })));
+  document.querySelectorAll('#view-root [data-exec]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ exec: el.dataset.exec, excludeClosed:true })));
   registerSave('an-exec', () => executivePerformanceRows(), 'Executive_Performance', 'Executive Performance');
   registerSave('an-source', () => sourcePerformanceRows(), 'Source_Performance', 'Source Performance');
   registerSave('an-cp', () => channelPartnerPerformanceRows(), 'Channel_Partner_Performance', 'Channel Partners');
