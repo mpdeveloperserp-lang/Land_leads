@@ -74,6 +74,11 @@
      whole screen beside the sidebar (Sara: "Website is have to like Full page
      module — we find multiple gaps in multiple pages"). */
   main{padding:20px 24px 60px;width:100%;}
+  .save-menu{position:relative;display:inline-block;}
+  .save-list{display:none;position:absolute;right:0;top:calc(100% + 4px);background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:50;min-width:210px;padding:4px 0;}
+  .save-list.open{display:block;}
+  .save-list button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 14px;font-size:13px;color:var(--teal);cursor:pointer;}
+  .save-list button:hover{background:#EEF4FB;}
   .req-star{color:var(--danger);font-weight:700;}
   .map-box{height:340px;border-radius:8px;border:1px solid var(--border);background:#eef1f5;z-index:0;}
   .map-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:12px;color:var(--muted);}
@@ -2195,12 +2200,35 @@ function render(){
   else if(currentView==='auditTrail') root.innerHTML = renderAuditTrailView();
   wireViewEvents();
 
-  const wantedHash = '#' + currentView;
+  const wantedHash = currentRouteHash();
   if(suppressHistoryPush){
     suppressHistoryPush = false;
   } else if(location.hash !== wantedHash){
-    history.pushState({ view: currentView }, '', wantedHash);
+    history.pushState({ route: wantedHash }, '', wantedHash);
   }
+}
+// ---- Browser Back / Forward ------------------------------------------------
+// Every page — including an open lead (#leadDetail/<id>) and a Channel
+// Partner's details (#channelPartners/<id>) — gets its own history entry,
+// so the browser's Back/Forward buttons step through exactly what you saw.
+function currentRouteHash(){
+  if(currentView==='leadDetail' && currentDetailLeadId) return '#leadDetail/' + currentDetailLeadId;
+  if(currentView==='channelPartners' && cpDetailId) return '#channelPartners/' + cpDetailId;
+  return '#' + currentView;
+}
+function applyRouteHash(hash){
+  const [view, id] = String(hash||'').replace(/^#/,'').split('/');
+  leadEditMode = false; changeStatusMode = false;
+  if(view==='leadDetail' && id){
+    if(currentView!=='leadDetail') previousView = currentView;
+    currentDetailLeadId = decodeURIComponent(id);
+    currentView = 'leadDetail';
+    return;
+  }
+  currentView = KNOWN_VIEWS.includes(view) ? view : 'dashboard';
+  cpDetailId = (view==='channelPartners' && id) ? decodeURIComponent(id) : null;
+  editingCPId = null; linkingCPOwnerId = null; cpDetailLoading = false;
+  if(currentView!=='leadDetail') currentDetailLeadId = null;
 }
 
 // ---- Navigation helpers ---------------------------------------------------
@@ -2372,7 +2400,7 @@ function renderDashboard(){
   const byCP = {};
   leads.filter(l=>l.channelPartnerCode).forEach(l=>{ byCP[l.channelPartnerCode]=(byCP[l.channelPartnerCode]||0)+1; });
   const cpRows = Object.entries(byCP).sort((a,b)=>b[1]-a[1]).map(([cp,c])=>
-    `<tr class="clickable-row" data-cp="${cp}"><td>${cp}</td><td>${c}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No channel partner leads yet</td></tr>';
+    `<tr class="clickable-row" data-cp="${cp}"><td>${(DB.getAllMasters('channelPartners').find(x=>x.code===cp)||{}).name || cp} <span style="color:var(--muted);font-size:11.5px;">${cp}</span></td><td>${c}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">No channel partner leads yet</td></tr>';
   // Leads by the person who CREATED them (not the assigned lead owner).
   const byCreator = {};
   leads.forEach(l=>{ const n = leadCreatorName(l); byCreator[n] = byCreator[n] || { total:0, active:0 }; byCreator[n].total++; if(isActive(l)) byCreator[n].active++; });
@@ -2437,7 +2465,7 @@ function renderDashboard(){
       </div>
       <div>
         <h2 class="section-title">By Channel Partner <span class="tag">click a row</span></h2>
-        <div class="card"><table><tr><th>Code</th><th>Count</th></tr>${cpRows}</table></div>
+        <div class="card"><table><tr><th>Channel Partner</th><th>Count</th></tr>${cpRows}</table></div>
       </div>
     </div>
     <h2 class="section-title">Leads by Lead Owner (Created By) <span class="tag">click a row</span></h2>
@@ -2486,8 +2514,54 @@ function exportRowsPDF(rows, filename, title){
     window.print();
   }
 }
+// ---- "Save" menu (IN4Suite report style) ----------------------------------
+// One Save button with a format list (Excel / PDF / Word / CSV / XML)
+// replaces the separate Export buttons everywhere. Each menu is registered
+// with registerSave(key, rowsFn, baseName, title) in the page's wire code.
+const SAVE_FORMATS = [['excel','Excel'],['pdf','PDF'],['word','Word'],['csv','CSV (comma delimited)'],['xml','XML file with report data']];
+const SAVE_HANDLERS = {};
+function saveMenuHtml(key){
+  return `<div class="save-menu"><button type="button" class="btn btn-sm btn-teal" data-save-toggle="${key}">💾 Save ▾</button>
+    <div class="save-list" data-save-list="${key}">${SAVE_FORMATS.map(([f,l])=>`<button type="button" data-save="${key}" data-fmt="${f}">${l}</button>`).join('')}</div></div>`;
+}
+function registerSave(key, rowsFn, baseName, title){ SAVE_HANDLERS[key] = { rowsFn, baseName, title }; }
+function escXml(v){ return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function saveRows(fmt, rows, baseName, title){
+  if(!rows || !rows.length){ alert('Nothing to save.'); return; }
+  const cols = Object.keys(rows[0]);
+  if(fmt==='excel') return exportRowsExcel(rows, baseName+'.xlsx', (title||'Report').slice(0,31));
+  if(fmt==='pdf') return exportRowsPDF(rows, baseName+'.pdf', title||baseName);
+  if(fmt==='csv') return downloadBlob(toCSV(rows), baseName+'.csv', 'text/csv;charset=utf-8;');
+  if(fmt==='word'){
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${escXml(title)}</title></head><body>
+      <h2 style="font-family:Arial">MP Developers — ${escXml(title)}</h2><p style="font-family:Arial;font-size:10pt">Generated by ${escXml(currentUser?currentUser.name:'')} on ${escXml(new Date().toLocaleString('en-IN'))}</p>
+      <table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-family:Arial;font-size:9pt"><tr>${cols.map(c=>`<th style="background:#1B2A4A;color:#fff">${escXml(c)}</th>`).join('')}</tr>
+      ${rows.map(r=>`<tr>${cols.map(c=>`<td>${escXml(r[c])}</td>`).join('')}</tr>`).join('')}</table></body></html>`;
+    return downloadBlob(html, baseName+'.doc', 'application/msword');
+  }
+  if(fmt==='xml'){
+    const tag = c => String(c).replace(/[^A-Za-z0-9_]/g,'_').replace(/^([^A-Za-z_])/,'_$1');
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<Report title="${escXml(title)}" generatedBy="${escXml(currentUser?currentUser.name:'')}" generatedAt="${new Date().toISOString()}">\n` +
+      rows.map(r=>'  <Row>'+cols.map(c=>`<${tag(c)}>${escXml(r[c])}</${tag(c)}>`).join('')+'</Row>').join('\n') + '\n</Report>';
+    return downloadBlob(xml, baseName+'.xml', 'application/xml');
+  }
+}
+(function wireSaveMenusOnce(){
+  document.addEventListener('click', e => {
+    const tog = e.target.closest('[data-save-toggle]');
+    const item = e.target.closest('[data-save]');
+    document.querySelectorAll('.save-list.open').forEach(el => { if(!tog || el.dataset.saveList!==tog.dataset.saveToggle) el.classList.remove('open'); });
+    if(tog){ const list = document.querySelector(`[data-save-list="${tog.dataset.saveToggle}"]`); if(list) list.classList.toggle('open'); return; }
+    if(item){
+      const h = SAVE_HANDLERS[item.dataset.save];
+      item.closest('.save-list').classList.remove('open');
+      if(h) saveRows(item.dataset.fmt, h.rowsFn(), h.baseName, h.title);
+    }
+  });
+})();
+
 function leadsReportRows(){
-  return visibleLeads().map(l=>({
+  return reportLeads().map(l=>({
     'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
     Stage: stageLabel(l.stage), Source: l.leadSource||'',
     'Channel Partner': l.channelPartnerCode||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
@@ -2503,68 +2577,135 @@ function leadsReportRows(){
 }
 function siteVisitReportRows(){
   const rows = [];
-  visibleLeads().forEach(l=>{
+  reportLeads().forEach(l=>{
     const seen = new Set();
     (l.stageHistory||[]).forEach(h=>{
       if(h.stage==='site_visited'){
         const d = (h.at||'').slice(0,10); seen.add(d);
-        rows.push({ 'Lead ID': l.leadId, Village: l.village||'', 'Visited On': d, 'Logged By': h.by||'', Executive: l.assignedExecutive||'', Source: l.leadSource||'' });
+        if(inRange(d, reportFilters.visitFrom, reportFilters.visitTo)) rows.push({ 'Lead ID': l.leadId, 'Land Name': l.landIdentificationName||'', 'Site Location': l.siteLocation||'', Village: l.village||'', 'Visited On': d, 'Logged By': h.by||'', 'Assigned Executive': l.assignedExecutive||'', Source: l.leadSource||'' });
       }
     });
     // The lead's own Site Visit Date field counts too (if not already logged that day).
-    if(l.siteVisitDate && !seen.has(l.siteVisitDate)){
-      rows.push({ 'Lead ID': l.leadId, Village: l.village||'', 'Visited On': l.siteVisitDate, 'Logged By': '(Site Visit Date)', Executive: l.assignedExecutive||'', Source: l.leadSource||'' });
+    if(l.siteVisitDate && !seen.has(l.siteVisitDate) && inRange(l.siteVisitDate, reportFilters.visitFrom, reportFilters.visitTo)){
+      rows.push({ 'Lead ID': l.leadId, 'Land Name': l.landIdentificationName||'', 'Site Location': l.siteLocation||'', Village: l.village||'', 'Visited On': l.siteVisitDate, 'Logged By': '(Site Visit Date)', 'Assigned Executive': l.assignedExecutive||'', Source: l.leadSource||'' });
     }
   });
   rows.sort((a,b)=> (b['Visited On']||'').localeCompare(a['Visited On']||''));
   return rows;
 }
 
-// ---- REPORTS ---------------------------------------------------------------
+// ---- REPORTS — filter first, then Generate (IN4Suite style) ----------------
+// Nothing is shown until the filters are chosen and Generate is clicked.
+// Site Location and the Lead From/To dates are mandatory (the dates default
+// to the last 12 months). "All" is an explicit choice for Site Location.
+function yearAgoStr(){ const d = new Date(); d.setFullYear(d.getFullYear()-1); return d.toISOString().slice(0,10); }
+const DEFAULT_REPORT_FILTERS = () => ({ site:'', source:'', owner:'', exec:'', village:'', mediator:'', leadFrom: yearAgoStr(), leadTo: todayStr(), visitFrom:'', visitTo:'', callFrom:'', callTo:'' });
+let reportFilters = DEFAULT_REPORT_FILTERS();
+let reportGenerated = false;
+function inRange(d, from, to){
+  if(!from && !to) return true;
+  if(!d) return false;
+  d = String(d).slice(0,10);
+  if(from && d < from) return false;
+  if(to && d > to) return false;
+  return true;
+}
+function leadVisitDates(l){
+  const ds = (l.stageHistory||[]).filter(h=>h.stage==='site_visited').map(h=>(h.at||'').slice(0,10));
+  if(l.siteVisitDate) ds.push(l.siteVisitDate);
+  return ds;
+}
+function reportLeads(){
+  const f = reportFilters;
+  return visibleLeads().filter(l=>{
+    if(f.site && f.site!=='__all' && (l.siteLocation||'') !== f.site) return false;
+    if(f.source && l.leadSource !== f.source) return false;
+    if(f.owner && leadCreatorName(l) !== f.owner) return false;
+    if(f.exec && l.assignedExecutive !== f.exec) return false;
+    if(f.village && (l.village||'') !== f.village) return false;
+    if(f.mediator && (l.mediatorName||'') !== f.mediator) return false;
+    if(!inRange(l.leadSourceDateTime, f.leadFrom, f.leadTo)) return false;
+    if((f.visitFrom || f.visitTo) && !leadVisitDates(l).some(d=>inRange(d, f.visitFrom, f.visitTo))) return false;
+    if((f.callFrom || f.callTo) && !inRange(l.firstCallDate, f.callFrom, f.callTo)) return false;
+    return true;
+  });
+}
 function renderReports(){
-  const leads = visibleLeads();
+  const all = visibleLeads();
+  const uniq = arr => [...new Set(arr.filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b)));
+  const f = reportFilters;
+  const opt = (vals, cur, none) => `<option value="">${none}</option>` + vals.map(v=>`<option value="${String(v).replace(/"/g,'&quot;')}" ${cur===v?'selected':''}>${v}</option>`).join('');
+  const filterPanel = `
+    <div class="card filter-panel">
+      <div class="form-grid">
+        <div><label>Site Location${REQ}</label><select id="rf-site"><option value="">[Select One]</option><option value="__all" ${f.site==='__all'?'selected':''}>All Site Locations</option>${uniq(all.map(l=>l.siteLocation)).map(v=>`<option value="${String(v).replace(/"/g,'&quot;')}" ${f.site===v?'selected':''}>${v}</option>`).join('')}</select></div>
+        <div><label>Lead Source</label><select id="rf-source">${opt(DB.getMasters('leadSources').map(x=>x.label), f.source, 'None selected')}</select></div>
+        <div><label>Lead Owner</label><select id="rf-owner">${opt(uniq(all.map(leadCreatorName).filter(n=>n!=='—')), f.owner, 'None selected')}</select></div>
+        <div><label>Assigned Executive</label><select id="rf-exec">${opt(uniq(all.map(l=>l.assignedExecutive)), f.exec, 'None selected')}</select></div>
+        <div><label>Village Name</label><select id="rf-village">${opt(uniq(DB.getMasters('villages').map(v=>v.name).concat(all.map(l=>l.village))), f.village, 'None selected')}</select></div>
+        <div><label>Mediator Name</label><select id="rf-mediator">${opt(uniq(DB.getMasters('mediators').map(m=>m.name).concat(all.map(l=>l.mediatorName))), f.mediator, 'None selected')}</select></div>
+        <div><label>Lead From Date${REQ}</label><input type="date" id="rf-lead-from" value="${f.leadFrom}"></div>
+        <div><label>Lead To Date${REQ}</label><input type="date" id="rf-lead-to" value="${f.leadTo}"></div>
+        <div></div>
+        <div><label>Site Visit From Date</label><input type="date" id="rf-visit-from" value="${f.visitFrom}"></div>
+        <div><label>Site Visit To Date</label><input type="date" id="rf-visit-to" value="${f.visitTo}"></div>
+        <div></div>
+        <div><label>First Call From Date</label><input type="date" id="rf-call-from" value="${f.callFrom}"></div>
+        <div><label>First Call To Date</label><input type="date" id="rf-call-to" value="${f.callTo}"></div>
+      </div>
+      <div class="erp-actions" style="margin:14px 0 2px;">
+        <button class="btn btn-gold" id="rf-generate">Generate</button>
+        <button class="btn btn-ghost" id="rf-reset">Reset</button>
+      </div>
+    </div>`;
+  if(!reportGenerated){
+    return `<div class="page-header"><h1>Reports</h1></div>${filterPanel}
+      <div class="card"><p class="empty" style="margin:0;">Choose the filters above and click <b>Generate</b> to see the report.</p></div>`;
+  }
+  const leads = reportLeads();
   const visits = siteVisitReportRows();
-
   const leadsRows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
-      <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
-      <td>${l.leadSource||'—'}</td><td>${l.assignedExecutive||'—'}</td><td>${fmtDate(l.leadSourceDateTime)}</td>
-    </tr>`).join('') || '<tr><td colspan="6" class="empty">No leads yet</td></tr>';
-
+      <td><b>${l.leadId}</b></td><td>${l.landIdentificationName||'—'}</td><td>${l.siteLocation||'—'}</td><td>${l.village||'—'}</td>
+      <td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td><td>${l.leadSource||'—'}</td>
+      <td>${leadCreatorName(l)}</td><td>${l.assignedExecutive||'—'}</td><td>${l.mediatorName||'—'}</td>
+      <td>${fmtDate(l.leadSourceDateTime)}</td><td>${fmtDate(l.firstCallDate)}</td><td>${fmtDate(l.siteVisitDate)}</td>
+    </tr>`).join('') || '<tr><td colspan="12" class="empty">No leads match these filters.</td></tr>';
   const visitRows = visits.map(v=>`<tr>
-      <td><b>${v['Lead ID']}</b></td><td>${v.Village}</td><td>${fmtDate(v['Visited On'])}</td><td>${v['Logged By']||'—'}</td><td>${v.Executive||'—'}</td>
-    </tr>`).join('') || '<tr><td colspan="5" class="empty">No site visits recorded yet — a visit is logged automatically when a lead moves to the Site Visited stage.</td></tr>';
-
-
-
+      <td><b>${v['Lead ID']}</b></td><td>${v['Land Name']||'—'}</td><td>${v['Site Location']||'—'}</td><td>${v.Village||'—'}</td><td>${fmtDate(v['Visited On'])}</td><td>${v['Logged By']||'—'}</td><td>${v['Assigned Executive']||'—'}</td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No site visits for these filters.</td></tr>';
+  const header = `<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      <div><div style="font-size:16px;font-weight:700;color:var(--navy);">MP Developers</div>
+      <div style="font-size:12px;color:var(--muted);">Generated by ${currentUser?currentUser.name:''} · ${new Date().toLocaleString('en-IN')} · Lead dates ${fmtDate(f.leadFrom)} – ${fmtDate(f.leadTo)}</div></div>`;
   return `
     <div class="page-header"><h1>Reports</h1></div>
-
-    <h2 class="section-title">Leads Report <span class="tag">${leads.length} leads</span></h2>
+    ${filterPanel}
+    <h2 class="section-title">Lead Report <span class="tag">${leads.length} lead${leads.length===1?'':'s'}</span></h2>
     <div class="card" style="margin-bottom:20px;">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="rep-leads-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="rep-leads-pdf">⬇ Export PDF</button>
-      </div>
-      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Source</th><th>Executive</th><th>Lead Date</th></tr>${leadsRows}</table></div>
+      ${header}${saveMenuHtml('rep-leads')}</div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Land Name</th><th>Site Location</th><th>Village</th><th>Status</th><th>Source</th><th>Lead Owner</th><th>Assigned Executive</th><th>Mediator</th><th>Lead Date</th><th>First Call</th><th>Site Visit</th></tr>${leadsRows}</table></div>
     </div>
-
-    <h2 class="section-title">Site Visit Report <span class="tag">${visits.length} visit${visits.length===1?'':'s'} recorded</span></h2>
+    <h2 class="section-title">Site Visit Report <span class="tag">${visits.length} visit${visits.length===1?'':'s'}</span></h2>
     <div class="card" style="margin-bottom:20px;">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="rep-visits-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="rep-visits-pdf">⬇ Export PDF</button>
-      </div>
-      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Village</th><th>Visited On</th><th>Logged By</th><th>Executive</th></tr>${visitRows}</table></div>
-    </div>
-
-  `;
+      ${header}${saveMenuHtml('rep-visits')}</div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead ID</th><th>Land Name</th><th>Site Location</th><th>Village</th><th>Visited On</th><th>Logged By</th><th>Assigned Executive</th></tr>${visitRows}</table></div>
+    </div>`;
 }
 function wireReportsEvents(){
+  const v = id => (document.getElementById(id)?.value || '');
+  const gen = document.getElementById('rf-generate');
+  if(gen) gen.onclick = () => {
+    const nf = { site:v('rf-site'), source:v('rf-source'), owner:v('rf-owner'), exec:v('rf-exec'), village:v('rf-village'), mediator:v('rf-mediator'),
+      leadFrom:v('rf-lead-from'), leadTo:v('rf-lead-to'), visitFrom:v('rf-visit-from'), visitTo:v('rf-visit-to'), callFrom:v('rf-call-from'), callTo:v('rf-call-to') };
+    if(!nf.site){ alert('Site Location is required — choose a location or "All Site Locations".'); return; }
+    if(!nf.leadFrom || !nf.leadTo){ alert('Lead From Date and Lead To Date are required.'); return; }
+    if(nf.leadFrom > nf.leadTo){ alert('Lead From Date must be on or before Lead To Date.'); return; }
+    reportFilters = nf; reportGenerated = true; render();
+  };
+  const rs = document.getElementById('rf-reset');
+  if(rs) rs.onclick = () => { reportFilters = DEFAULT_REPORT_FILTERS(); reportGenerated = false; render(); };
   document.querySelectorAll('#view-root tr.clickable-row[data-id]').forEach(tr=>tr.addEventListener('click', ()=>openLeadDetail(tr.dataset.id)));
-  const le = document.getElementById('rep-leads-excel'); if(le) le.onclick = () => exportRowsExcel(leadsReportRows(), 'Land_Leads_Report.xlsx', 'Leads');
-  const lp = document.getElementById('rep-leads-pdf');   if(lp) lp.onclick = () => exportRowsPDF(leadsReportRows(), 'Land_Leads_Report.pdf', 'Leads Report');
-  const ve = document.getElementById('rep-visits-excel'); if(ve) ve.onclick = () => exportRowsExcel(siteVisitReportRows(), 'Site_Visit_Report.xlsx', 'Site Visits');
-  const vp = document.getElementById('rep-visits-pdf');   if(vp) vp.onclick = () => exportRowsPDF(siteVisitReportRows(), 'Site_Visit_Report.pdf', 'Site Visit Report');
+  registerSave('rep-leads', () => leadsReportRows(), 'Lead_Report', 'Lead Report');
+  registerSave('rep-visits', () => siteVisitReportRows(), 'Site_Visit_Report', 'Site Visit Report');
 }
 
 // ---- MIS ANALYTICS ---------------------------------------------------------
@@ -2688,8 +2829,7 @@ function renderAnalytics(){
     <h2 class="section-title">Executive Performance — by Lead Owner</h2>
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="an-exec-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="an-exec-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('an-exec')}
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Lead Owner (Created By)</th><th>Leads Owned</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Conversion %</th><th>Avg Days to Close</th><th>Overdue (Past SLA)</th><th>Currently Assigned (Active)</th></tr>${execHtml}</table></div>
     </div>
@@ -2697,8 +2837,7 @@ function renderAnalytics(){
     <h2 class="section-title">Source-wise Performance</h2>
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="an-source-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="an-source-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('an-source')}
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Source</th><th>Total Leads</th><th>Acquired</th><th>Conversion %</th></tr>${srcHtml}</table></div>
     </div>
@@ -2706,8 +2845,7 @@ function renderAnalytics(){
     <h2 class="section-title">Channel Partner Performance</h2>
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="an-cp-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="an-cp-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('an-cp')}
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Channel Partner</th><th>Leads Sourced</th><th>Acquired</th><th>Conversion %</th></tr>${cpHtml}</table></div>
     </div>
@@ -2715,8 +2853,7 @@ function renderAnalytics(){
     <h2 class="section-title">Stage Aging</h2>
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="an-aging-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="an-aging-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('an-aging')}
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Stage</th><th>Leads Currently In Stage</th><th>SLA (days)</th><th>Avg Days In Stage</th><th>Overdue (Past SLA)</th></tr>${agingHtml}</table></div>
     </div>
@@ -2724,24 +2861,18 @@ function renderAnalytics(){
     <h2 class="section-title">Financial Summary</h2>
     <div class="card">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
-        <button class="btn btn-sm btn-ghost" id="an-fin-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="an-fin-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('an-fin')}
       </div>
       <div style="overflow-x:auto;"><table><tr><th>Metric</th><th>Value</th></tr>${finHtml}</table></div>
     </div>
   `;
 }
 function wireAnalyticsEvents(){
-  const ee = document.getElementById('an-exec-excel'); if(ee) ee.onclick = () => exportRowsExcel(executivePerformanceRows(), 'Executive_Performance.xlsx', 'Executive Performance');
-  const ep = document.getElementById('an-exec-pdf');   if(ep) ep.onclick = () => exportRowsPDF(executivePerformanceRows(), 'Executive_Performance.pdf', 'Executive Performance');
-  const se = document.getElementById('an-source-excel'); if(se) se.onclick = () => exportRowsExcel(sourcePerformanceRows(), 'Source_Performance.xlsx', 'Source Performance');
-  const sp = document.getElementById('an-source-pdf');   if(sp) sp.onclick = () => exportRowsPDF(sourcePerformanceRows(), 'Source_Performance.pdf', 'Source-wise Performance');
-  const ce = document.getElementById('an-cp-excel'); if(ce) ce.onclick = () => exportRowsExcel(channelPartnerPerformanceRows(), 'Channel_Partner_Performance.xlsx', 'Channel Partners');
-  const cp = document.getElementById('an-cp-pdf');   if(cp) cp.onclick = () => exportRowsPDF(channelPartnerPerformanceRows(), 'Channel_Partner_Performance.pdf', 'Channel Partner Performance');
-  const ae = document.getElementById('an-aging-excel'); if(ae) ae.onclick = () => exportRowsExcel(stageAgingRows(), 'Stage_Aging.xlsx', 'Stage Aging');
-  const ap = document.getElementById('an-aging-pdf');   if(ap) ap.onclick = () => exportRowsPDF(stageAgingRows(), 'Stage_Aging.pdf', 'Stage Aging');
-  const fe = document.getElementById('an-fin-excel'); if(fe) fe.onclick = () => exportRowsExcel(financialSummaryRows(), 'Financial_Summary.xlsx', 'Financial Summary');
-  const fp = document.getElementById('an-fin-pdf');   if(fp) fp.onclick = () => exportRowsPDF(financialSummaryRows(), 'Financial_Summary.pdf', 'Financial Summary');
+  registerSave('an-exec', () => executivePerformanceRows(), 'Executive_Performance', 'Executive Performance');
+  registerSave('an-source', () => sourcePerformanceRows(), 'Source_Performance', 'Source Performance');
+  registerSave('an-cp', () => channelPartnerPerformanceRows(), 'Channel_Partner_Performance', 'Channel Partners');
+  registerSave('an-aging', () => stageAgingRows(), 'Stage_Aging', 'Stage Aging');
+  registerSave('an-fin', () => financialSummaryRows(), 'Financial_Summary', 'Financial Summary');
 }
 
 // ---- ALL LEADS LIST (dense ERP-style table page) --------------------------
@@ -2841,7 +2972,7 @@ function renderList(){
           return `<button class="idx-btn ${active?'active':''}" data-letter="${isAll?'':L}">${L}</button>`;
         }).join('')}</div>
       </div>
-      <button class="btn btn-sm btn-ghost" id="btn-export-list">⬇ Export (CSV)</button>
+      ${saveMenuHtml('list')}
     </div>
 
     <div class="card" style="padding:0;overflow-x:auto;">
@@ -2912,19 +3043,16 @@ function wireListEvents(){
     listPage = Math.max(1, Math.ceil(total/PAGE_SIZE)); render();
   };
 
-  const exportBtn = document.getElementById('btn-export-list');
-  if(exportBtn) exportBtn.onclick = () => {
+  registerSave('list', () => {
     const filtered = visibleLeads().filter(l=>leadMatchesFilters(l, listFilters));
     const source = selectedLeadIds.size ? filtered.filter(l=>selectedLeadIds.has(l.id)) : filtered;
-    if(!source.length){ alert('Nothing to export.'); return; }
-    const rows = source.map(l=>({
+    return source.map(l=>({
       'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', Village: l.village||'', 'Contact Number': l.contactNumber||'', 'Land Classification Type': l.landClassification||'', 'Survey No.': l.surveyNumber||'',
       Extent: l.extentValue, 'Extent Unit': EXTENT_UNITS[l.extentUnit]?.label||'',
       Price: l.priceValue, 'Price Unit': EXTENT_UNITS[l.priceUnit]?.label||'',
-      Landowner: l.landownerName||'', Source: l.leadSource||'', Executive: l.assignedExecutive||''
+      Landowner: l.landownerName||'', Source: l.leadSource||'', 'Lead Owner': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'', Status: stageLabel(l.stage)
     }));
-    downloadBlob(toCSV(rows), 'Land_Leads_List.csv', 'text/csv;charset=utf-8;');
-  };
+  }, 'Land_Leads_List', 'Land Leads List');
 
   const newBtn = document.getElementById('btn-new-lead');
   if(newBtn) newBtn.addEventListener('click', goToNewLead);
@@ -4111,8 +4239,7 @@ function renderAuditTrailView(){
     </div>
     <div class="card" style="padding:0;overflow-x:auto;margin-bottom:14px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;padding:12px;">
-        <button class="btn btn-sm btn-ghost" id="at-excel">⬇ Export Excel</button>
-        <button class="btn btn-sm btn-ghost" id="at-pdf">⬇ Export PDF</button>
+        ${saveMenuHtml('at')}
       </div>
       <table><tr><th>Date/Time</th><th>Actor</th><th>Role</th><th>Action</th><th>Entity Type</th><th>Entity</th><th>Notes</th></tr>${rows}</table>
     </div>
@@ -4127,8 +4254,7 @@ function wireAuditTrailEvents(){
   };
   const clearBtn = document.getElementById('at-clear');
   if(clearBtn) clearBtn.onclick = () => { auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' }; render(); };
-  const xe = document.getElementById('at-excel'); if(xe) xe.onclick = () => exportRowsExcel(auditTrailReportRows(), 'Audit_Trail.xlsx', 'Audit Trail');
-  const xp = document.getElementById('at-pdf');   if(xp) xp.onclick = () => exportRowsPDF(auditTrailReportRows(), 'Audit_Trail.pdf', 'Audit Trail');
+  registerSave('at', () => auditTrailReportRows(), 'Audit_Trail', 'Audit Trail');
 }
 
 // ---- CONFIGURE (Lead Field Configuration) ---------------------------------
@@ -4364,7 +4490,8 @@ function closeLeadDetail(){
 }
 
 function renderLeadDetailPage(){
-  const l = DB.getLead(currentDetailLeadId);
+  let l = DB.getLead(currentDetailLeadId);
+  if(l && currentUser && !visibleLeads().some(v=>v.id===l.id)) l = null;
   if(!l){
     return `
       <div class="page-header"><h1>Lead Details</h1></div>
@@ -5084,6 +5211,7 @@ function wireSidebarNav(){
         if(b.dataset.view==='statusConfig') statusDraftRows = null;
         if(b.dataset.view==='pageAccess'){ pageAccessDraftRows = null; pageAccessSelectedUserUid = ''; userOverrideDraftRows = null; }
         if(b.dataset.view==='landowners'){ editingLandownerId = null; }
+        if(b.dataset.view==='reports'){ reportGenerated = false; }
         currentView = b.dataset.view;
         render();
       }
@@ -5096,16 +5224,11 @@ wireSidebarNav();
 // link / reload support), then normalize the history entry so the very
 // first back-press doesn't feel like a no-op.
 (function initHistory(){
-  const initial = (location.hash || '').slice(1);
-  if(KNOWN_VIEWS.includes(initial)) currentView = initial;
-  history.replaceState({ view: currentView }, '', '#' + currentView);
+  applyRouteHash(location.hash || '#dashboard');
+  history.replaceState({ route: currentRouteHash() }, '', currentRouteHash());
   window.addEventListener('popstate', (e) => {
-    // Lead Details isn't in KNOWN_VIEWS (it's a universal drill-through, not
-    // a navigable page — see canAccessView()), so Back/Forward landing on
-    // its old hash falls through to Dashboard below, same as any other
-    // unrecognized hash already does.
-    const v = (e.state && e.state.view) || (location.hash || '').slice(1);
-    currentView = KNOWN_VIEWS.includes(v) ? v : 'dashboard';
+    applyRouteHash((e.state && e.state.route) || location.hash || '#dashboard');
+    if(!currentUser) return; // still on the login screen — applied once signed in
     suppressHistoryPush = true;
     render();
   });
