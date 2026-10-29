@@ -74,6 +74,7 @@
      whole screen beside the sidebar (Sara: "Website is have to like Full page
      module — we find multiple gaps in multiple pages"). */
   main{padding:20px 24px 60px;width:100%;}
+  .req-star{color:var(--danger);font-weight:700;}
   .map-box{height:340px;border-radius:8px;border:1px solid var(--border);background:#eef1f5;z-index:0;}
   .map-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:12px;color:var(--muted);}
   .cond-box{background:#F6F8FB;border:1px dashed #cfd6e2;border-radius:8px;padding:10px 12px;}
@@ -397,6 +398,8 @@ function landClassKind(label){
   return '';
 }
 const LAND_CLASS_TYPES = ['Outright','Joint Venture','Staggered Payment'];
+// Red asterisk for every mandatory field label, app-wide.
+const REQ = ' <span class="req-star">*</span>';
 // Pulls a lat/long out of whatever was typed/pasted into the Location Pin
 // field: "13.08, 80.27", a full Google Maps URL (…/@13.08,80.27,15z or
 // ?q=13.08,80.27). Short share links (maps.app.goo.gl/…) can't be resolved
@@ -3017,7 +3020,8 @@ function renderMasters(){
             const codeVal = editing ? (editing.code||'') : nextMasterCode(def.autoCode, items);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="mf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
-          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
+          const req = (f===def.fields[0]) || (def.autoCode && f==='name') || (def.key==='channelPartners' && f==='phone');
+          return `<div><label>${FIELD_LABELS[f]||f}${req?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="mf-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${editing && editing[f]!=null ? editing[f] : ''}"></div>`;
         }).join('')}
       </div>
       ${def.autoCode ? `<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — ${editing ? 'it stays as it was assigned and can\'t be changed here.' : 'the next one is shown above and is applied when you click Add.'}</p>` : ''}
@@ -3063,10 +3067,10 @@ function wireMastersEvents(){
       const el = document.getElementById('mf-'+f);
       let v = el.value.trim();
       if(f==='commissionPct') v = v==='' ? null : parseFloat(v);
-      if(f===def.fields[0] && v==='' ) ok = false;
+      if((f===def.fields[0] || (def.autoCode && f==='name')) && v==='' ) ok = false;
       fields[f] = v;
     });
-    if(!ok){ alert('The first field is required.'); return; }
+    if(!ok){ alert('Please fill in the fields marked with a red *.'); return; }
     const singular = def.label.replace(/ies$/,'y').replace(/s$/,'');
     if(editingMasterId){
       await DB.updateMaster(currentMasterKey, editingMasterId, fields);
@@ -3175,7 +3179,7 @@ function renderChannelPartnersView(){
             const codeVal = nextMasterCode(CP_DEF.autoCode, allItemsForCode);
             return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cf-${f}" value="${codeVal}" disabled title="Generated automatically — not editable"></div>`;
           }
-          return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value=""></div>`;
+          return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cf-${f}" ${f==='commissionPct'?'step="0.01"':''} value=""></div>`;
         }).join('')}
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code is generated automatically — the next one is shown above and is applied when you click Add. Adding a new Channel Partner here stamps you as its owner. Name and Phone are required; Phone must be a 10-digit mobile number.</p>
@@ -3248,7 +3252,7 @@ function renderCPDetailPage(){
         if(CP_DEF.autoCode && f==='code'){
           return `<div><label>${FIELD_LABELS[f]||f}</label><input type="text" id="cfd-${f}" value="${cp.code||''}" disabled title="Code can't be changed here"></div>`;
         }
-        return `<div><label>${FIELD_LABELS[f]||f}</label><input type="${f==='commissionPct'?'number':'text'}" id="cfd-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${cp[f]!=null?cp[f]:''}"></div>`;
+        return `<div><label>${FIELD_LABELS[f]||f}${(f==='name'||f==='phone')?REQ:''}</label><input type="${f==='commissionPct'?'number':'text'}" id="cfd-${f}" ${f==='commissionPct'?'step="0.01"':''} value="${cp[f]!=null?cp[f]:''}"></div>`;
       }).join('')}
     </div>
     <p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Code can't be changed here. Name and Phone are required; Phone must be a 10-digit mobile number. Saving never changes who owns this record — use Link/Change Owner for that.</p>
@@ -3473,15 +3477,15 @@ function renderUsersView(){
     <div class="card">
       <h2 class="section-title" style="margin-top:0;">${editing ? 'Edit User' : 'Add User'}</h2>
       <div class="form-grid">
-        <div><label>Name</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
-        <div><label>Email</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
+        <div><label>Name${REQ}</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
+        <div><label>Email${editing?'':REQ}</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
         <div><label>Phone</label><input type="text" id="uf-phone" value="${editing?(editing.phone||''):''}"></div>
         <div><label>Designation</label><input type="text" id="uf-designation" value="${editing?(editing.designation||''):''}" placeholder="e.g. VP, GM, AGM, Team Lead"></div>
-        <div><label>Role</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+        <div><label>Role${REQ}</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
         <div id="uf-reports-to-wrap" ${reportsToHidden ? 'style="display:none;"' : ''}><label>Reports To</label><select id="uf-reports-to">${reportsToOptionsHtml(roleForForm, editing?editing.reportsTo:'', editing?editing.uid:'')}</select></div>
         ${editing
           ? `<div><label>New Password</label><input type="password" id="uf-password" placeholder="Leave blank to keep their current password"></div>`
-          : `<div><label>Password</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
+          : `<div><label>Password${REQ}</label><input type="password" id="uf-password" placeholder="At least 6 characters"></div>`}
       </div>
       ${editing ? '<p style="font-size:11.5px;color:var(--muted);margin-top:8px;">Email can\'t be changed here. To set this user\'s password, type a new one above (at least 6 characters) and click Update — it takes effect immediately; leave it blank to leave their password untouched. Only a Head or Admin account can do this.</p>' : ''}
       <div style="margin-top:10px;display:flex;gap:8px;">
@@ -3610,8 +3614,8 @@ function renderLandownersView(){
       <h2 class="section-title" style="margin-top:0;">${editing?'Edit Landowner':'Add Landowner'}</h2>
       <div class="form-grid">
         <div><label>Landowner ID</label><input type="text" id="lo-code" value="${codeVal}" disabled title="Generated automatically — not editable"></div>
-        <div><label>Full Name *</label><input type="text" id="lo-name" value="${editing?editing.fullName:''}"></div>
-        <div><label>Contact Number *</label><input type="text" id="lo-contact" value="${editing?(editing.contactNumber||''):''}"></div>
+        <div><label>Full Name${REQ}</label><input type="text" id="lo-name" value="${editing?editing.fullName:''}"></div>
+        <div><label>Contact Number${REQ}</label><input type="text" id="lo-contact" value="${editing?(editing.contactNumber||''):''}"></div>
         <div><label>Alternate Contact Number</label><input type="text" id="lo-alt-contact" value="${editing?(editing.altContactNumber||''):''}"></div>
         <div><label>Email</label><input type="email" id="lo-email" value="${editing?(editing.email||''):''}"></div>
         <div><label>District</label><input type="text" id="lo-district" value="${editing?(editing.district||''):''}"></div>
@@ -4249,7 +4253,7 @@ function wireNewLeadViewEvents(){
     if(cfg.visible===false) wrap.style.display = 'none';
     if(cfg.mandatory && cfg.visible!==false){
       const lbl = wrap.querySelector('label');
-      if(lbl && !lbl.querySelector('.req-star')) lbl.innerHTML += ' <span class="req-star" style="color:var(--danger)">*</span>';
+      if(lbl && !lbl.querySelector('.req-star')) lbl.innerHTML += REQ;
     }
   });
 
@@ -4411,6 +4415,41 @@ function renderLeadDetailPage(){
     </div>`}`;
 }
 
+// Modify form: the same Configure-page Mandatory flags as the New Lead form
+// (red * on the label, and enforced on Save).
+const MODIFY_FIELD_INPUTS = {
+  siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
+  channelPartnerCode:'ov-e-cp', projectCode:'ov-e-project', village:'ov-e-village', surveyNumber:'ov-e-survey',
+  googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val', price:'ov-e-price-val',
+  roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner-name', landownerPhone:'ov-e-owner-phone',
+  mediatorName:'ov-e-med-name', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
+};
+function labelForInput(el){
+  let n = el && el.parentElement;
+  while(n && n !== document.body){
+    const lbl = Array.from(n.children).find(c=>c.tagName==='LABEL');
+    if(lbl) return lbl;
+    n = n.parentElement;
+  }
+  return null;
+}
+function markModifyMandatory(){
+  const fcfg = fieldConfigMap();
+  Object.entries(MODIFY_FIELD_INPUTS).forEach(([field,id])=>{
+    const cfg = fcfg[field]; const el = document.getElementById(id);
+    if(!cfg || !cfg.mandatory || cfg.visible===false || !el) return;
+    const lbl = labelForInput(el);
+    if(lbl && !lbl.querySelector('.req-star')) lbl.insertAdjacentHTML('beforeend', REQ);
+  });
+}
+function missingModifyMandatory(){
+  const fcfg = fieldConfigMap();
+  for(const [field,id] of Object.entries(MODIFY_FIELD_INPUTS)){
+    const cfg = fcfg[field]; const el = document.getElementById(id);
+    if(cfg && cfg.mandatory && cfg.visible!==false && el && !String(el.value||'').trim()) return cfg.label || field;
+  }
+  return null;
+}
 function wireLeadDetailViewEvents(){
   const backBtn = document.getElementById('ld-back');
   if(backBtn) backBtn.onclick = closeLeadDetail;
@@ -4422,6 +4461,7 @@ function wireLeadDetailViewEvents(){
   if(leadEditMode && canModifyLeadDetails(l)){
     mountPickerMap('ov-e', leadGeo(l));
     wireClassToggle('ov-e');
+    markModifyMandatory();
   } else {
     mountViewMap('ld-map', leadGeo(l));
   }
@@ -4737,7 +4777,7 @@ function renderStageTab(l){
   const changeForm = (targets.length && changeStatusMode) ? `
     <fieldset><legend>Change Status</legend>
       <div class="form-grid">
-        <div class="full"><label>New Status</label>
+        <div class="full"><label>New Status${REQ}</label>
           <select id="cs-target">
             <option value="">[Select One]</option>
             ${targets.map(t=>`<option value="${t.key}" ${t.allowed?'':'disabled'}>${t.label}${t.gated?(t.allowed?' — needs approval':' — only '+gateRoleLabels(l.stage,t.key)+' can approve'):''}</option>`).join('')}
@@ -4745,16 +4785,16 @@ function renderStageTab(l){
         </div>
         <div id="cs-closing" class="full" style="display:none;">
           <div class="form-grid">
-            <div><label>Final Price (per ${EXTENT_UNITS[l.priceUnit]?.label||'unit'})</label><input type="number" id="cs-final-price" step="0.01" value="${l.priceValue||''}"></div>
+            <div><label>Final Price (per ${EXTENT_UNITS[l.priceUnit]?.label||'unit'})${REQ}</label><input type="number" id="cs-final-price" step="0.01" value="${l.priceValue||''}"></div>
             <div><label>Final Date</label><input type="date" id="cs-final-date" value="${todayStr()}"></div>
           </div>
         </div>
         <div id="cs-drop" class="full" style="display:none;">
           <div class="form-grid">
-            <div><label>Drop Reason</label><select id="cs-drop-reason">${dropReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
+            <div><label>Drop Reason${REQ}</label><select id="cs-drop-reason">${dropReasons.map(r=>`<option>${r.label}</option>`).join('')}</select></div>
           </div>
         </div>
-        <div class="full"><label>Approver Remarks</label><textarea id="cs-remarks" rows="3" placeholder="Remarks for this status change (shown in the Audit Trail)"></textarea></div>
+        <div class="full"><label>Approver Remarks<span id="cs-remarks-req" style="display:none;">${REQ}</span></label><textarea id="cs-remarks" rows="3" placeholder="Remarks for this status change (shown in the Audit Trail)"></textarea></div>
         <div class="full"><label>Documents for the new status (optional)</label>
           ${docUploadFieldsHtml('mv')}
         </div>
@@ -4889,6 +4929,8 @@ function wireDetailTabEvents(l){
     if(cancelBtn) cancelBtn.onclick = () => { leadEditMode = false; render(); };
     const saveBtn = document.getElementById('ov-save-details');
     if(saveBtn) saveBtn.onclick = async () => {
+      const missing = missingModifyMandatory();
+      if(missing){ alert(missing + ' is required (fields marked with a red *).'); return; }
       const val = id => document.getElementById(id)?.value;
       const numOrNull = id => { const v = parseFloat(val(id)); return isNaN(v) ? null : v; };
       const geo = readPickerGeo('ov-e');
@@ -4942,6 +4984,8 @@ function wireDetailTabEvents(l){
       if(!sel) return;
       document.getElementById('cs-closing').style.display = sel.value==='closed' ? '' : 'none';
       document.getElementById('cs-drop').style.display = sel.value==='__drop' ? '' : 'none';
+      const t = statusTargets(l).find(x=>x.key===sel.value);
+      const rq = document.getElementById('cs-remarks-req'); if(rq) rq.style.display = (t && t.gated) ? '' : 'none';
     };
     if(sel){ sel.addEventListener('change', syncSel); syncSel(); }
     const upd = document.getElementById('cs-update');
