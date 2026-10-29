@@ -79,6 +79,18 @@
   .cond-box{background:#F6F8FB;border:1px dashed #cfd6e2;border-radius:8px;padding:10px 12px;}
   .doc-group{margin-bottom:12px;}
   .doc-group h4{margin:0 0 4px;font-size:12.5px;color:var(--navy);}
+  /* Lead Details — one outlined sheet with blue section bands (IN4Suite) */
+  .erp-sheet{background:#fff;border:1px solid #cdd8e8;border-radius:8px;overflow:hidden;}
+  .erp-band{background:#E2EBF7;color:var(--navy);font-weight:700;font-size:14px;padding:10px 16px;border-top:1px solid #cdd8e8;border-bottom:1px solid #cdd8e8;}
+  .erp-sheet > .erp-band:first-child{border-top:none;}
+  .erp-body{padding:14px 16px;}
+  .erp-split{display:grid;grid-template-columns:1fr 1fr;}
+  .erp-split > div + div{border-left:1px solid #cdd8e8;}
+  .erp-split fieldset{margin-bottom:12px;}
+  .erp-actions{display:flex;justify-content:center;gap:10px;margin:18px 0 6px;}
+  .form-grid.one-col{grid-template-columns:1fr !important;}
+  @media (max-width:820px){ .erp-split{grid-template-columns:1fr;} .erp-split > div + div{border-left:none;} }
+  @media print{ .sidebar,.topbar,.erp-actions,#banner-holder,fieldset{display:none !important;} main{padding:0;} }
   /* Org tree (Manage Users) */
   .org-tree, .org-tree ul{list-style:none;margin:0;padding:0;}
   .org-tree ul{margin-left:22px;border-left:2px solid #d5dbe5;padding-left:14px;}
@@ -226,9 +238,9 @@
     .form-grid > div:not(.full){display:grid;grid-template-columns:minmax(120px,40%) minmax(0,1fr);align-items:center;column-gap:12px;}
     .form-grid > div:not(.full) > label{margin:0;text-transform:none;letter-spacing:0;font-size:12.5px;font-weight:600;color:#3d4554;}
     .form-grid > div:not(.full) > :not(label){grid-column:2;}
-    .two-col .form-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;}
-    .two-col .form-grid > div:not(.full){display:block;}
-    .two-col .form-grid > div:not(.full) > label{margin-bottom:4px;text-transform:uppercase;font-size:11.5px;color:var(--muted);font-weight:700;letter-spacing:.3px;}
+    .two-col .form-grid, .erp-split .form-grid:not(.one-col){grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;}
+    .two-col .form-grid > div:not(.full), .erp-split .form-grid:not(.one-col) > div:not(.full){display:block;}
+    .two-col .form-grid > div:not(.full) > label, .erp-split .form-grid:not(.one-col) > div:not(.full) > label{margin-bottom:4px;text-transform:uppercase;font-size:11.5px;color:var(--muted);font-weight:700;letter-spacing:.3px;}
   }
   @media (max-width:820px){.two-col{grid-template-columns:1fr;} .form-grid{grid-template-columns:1fr;} .app-shell{flex-direction:column;} .sidebar{position:static;height:auto;width:100%;flex:0 0 auto;}}
 </style>
@@ -623,7 +635,9 @@ function visibleLeads(){
   if(!currentUser) return [];
   if(currentUser.role==='sysadmin') return all;
   const scope = teamScopeUids(currentUser);
-  return all.filter(l => ownerVisibleTo(currentUser, l.assignedExecutive, scope));
+  // A lead is visible through its assignee OR its owner (the creator), so
+  // a lead owner keeps seeing a lead after handing it to someone else.
+  return all.filter(l => ownerVisibleTo(currentUser, l.assignedExecutive, scope) || (l.createdByName && ownerVisibleTo(currentUser, l.createdByName, scope)));
 }
 // People whose leads this user can see — drives the "Assigned Executive"
 // filter/dropdowns. Includes every role in the tree (a Manager can hold
@@ -2406,8 +2420,8 @@ function renderDashboard(){
         <div class="card"><table><tr><th>Code</th><th>Count</th></tr>${cpRows}</table></div>
       </div>
     </div>
-    <h2 class="section-title">Leads by Created By <span class="tag">click a row</span></h2>
-    <div class="card"><table><tr><th>Lead Created By</th><th>Total Leads</th><th>Active</th></tr>${creatorRows}</table></div>
+    <h2 class="section-title">Leads by Lead Owner (Created By) <span class="tag">click a row</span></h2>
+    <div class="card"><table><tr><th>Lead Owner (Created By)</th><th>Total Leads</th><th>Active</th></tr>${creatorRows}</table></div>
   `;
 }
 
@@ -2456,7 +2470,7 @@ function leadsReportRows(){
   return visibleLeads().map(l=>({
     'Lead ID': l.leadId, 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
     Project: l.projectCode||'', Stage: stageLabel(l.stage), Source: l.leadSource||'',
-    'Channel Partner': l.channelPartnerCode||'', 'Lead Created By': leadCreatorName(l), 'Lead Owner': l.assignedExecutive||'',
+    'Channel Partner': l.channelPartnerCode||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
     'Land Classification Type': l.landClassification||'',
     'Price (Outright/Staggered)': l.classPriceValue!=null ? (l.classPriceValue + ' / ' + (EXTENT_UNITS[l.classPriceUnit]?.label||'')) : '',
     'JV Ratio': l.jvRatio||'', 'Instalment Schedule': l.instalmentSchedule||'',
@@ -2579,8 +2593,13 @@ function wireReportsEvents(){
 // visibleChannelPartners() scoping as everywhere else, so a Manager's
 // numbers are their own branch's, never company-wide.
 function executivePerformanceRows(){
+  // Grouped by LEAD OWNER — the person who created the lead (Sara: the
+  // creator is the lead owner, not whoever it's currently assigned to).
+  // "Currently Assigned" shows how many leads are sitting with them now.
+  const all = visibleLeads();
   return visibleExecutives().map(e=>{
-    const leads = visibleLeads().filter(l=>l.assignedExecutive===e.name);
+    const leads = all.filter(l=>leadCreatorName(l)===e.name);
+    const assignedNow = all.filter(l=>l.assignedExecutive===e.name && isActive(l)).length;
     const acquired = leads.filter(l=>l.outcome==='acquired');
     const dropped = leads.filter(l=>l.outcome==='dropped').length;
     const activeCount = leads.length - acquired.length - dropped;
@@ -2588,10 +2607,11 @@ function executivePerformanceRows(){
     const closeDurations = acquired.filter(l=>l.finalDate).map(l=>daysBetween(new Date(l.createdAt), new Date(l.finalDate)));
     const avgDaysToClose = closeDurations.length ? Math.round(closeDurations.reduce((s,d)=>s+d,0)/closeDurations.length) : null;
     return {
-      Executive: e.name, 'Total Leads': leads.length, Active: activeCount, Acquired: acquired.length, Dropped: dropped,
+      'Lead Owner': e.name, 'Leads Owned': leads.length, Active: activeCount, Acquired: acquired.length, Dropped: dropped,
       'Conversion %': leads.length ? Number((acquired.length/leads.length*100).toFixed(1)) : 0,
       'Avg Days to Close': avgDaysToClose!=null ? avgDaysToClose : '—',
       'Overdue (Past SLA)': overdue,
+      'Currently Assigned (Active)': assignedNow,
     };
   });
 }
@@ -2666,9 +2686,9 @@ function renderAnalytics(){
   const finRows = financialSummaryRows();
 
   const execHtml = execRows.map(r=>`<tr>
-      <td><b>${r.Executive}</b></td><td>${r['Total Leads']}</td><td>${r.Active}</td><td>${r.Acquired}</td><td>${r.Dropped}</td>
-      <td>${r['Conversion %']}%</td><td>${r['Avg Days to Close']}</td><td>${r['Overdue (Past SLA)']}</td>
-    </tr>`).join('') || `<tr><td colspan="8" class="empty">No executives to report on yet.</td></tr>`;
+      <td><b>${r['Lead Owner']}</b></td><td>${r['Leads Owned']}</td><td>${r.Active}</td><td>${r.Acquired}</td><td>${r.Dropped}</td>
+      <td>${r['Conversion %']}%</td><td>${r['Avg Days to Close']}</td><td>${r['Overdue (Past SLA)']}</td><td>${r['Currently Assigned (Active)']}</td>
+    </tr>`).join('') || `<tr><td colspan="9" class="empty">No executives to report on yet.</td></tr>`;
   const srcHtml = srcRows.map(r=>`<tr><td><b>${r.Source}</b></td><td>${r['Total Leads']}</td><td>${r.Acquired}</td><td>${r['Conversion %']}%</td></tr>`).join('')
     || `<tr><td colspan="4" class="empty">No leads yet.</td></tr>`;
   const cpHtml = cpRows.map(r=>`<tr><td><b>${r['Channel Partner']}</b></td><td>${r['Leads Sourced']}</td><td>${r.Acquired}</td><td>${r['Conversion %']}%</td></tr>`).join('')
@@ -2683,13 +2703,13 @@ function renderAnalytics(){
     <div class="page-header"><h1>MIS Analytics</h1></div>
     <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Aggregated performance and financial KPIs — for per-record detail, see the Reports page instead. Scoped the same way every other page here is: a Manager sees their own branch's numbers, Head/Admin see everything visible to them.</p>
 
-    <h2 class="section-title">Executive Performance</h2>
+    <h2 class="section-title">Executive Performance — by Lead Owner</h2>
     <div class="card" style="margin-bottom:20px;">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px;">
         <button class="btn btn-sm btn-ghost" id="an-exec-excel">⬇ Export Excel</button>
         <button class="btn btn-sm btn-ghost" id="an-exec-pdf">⬇ Export PDF</button>
       </div>
-      <div style="overflow-x:auto;"><table><tr><th>Executive</th><th>Total Leads</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Conversion %</th><th>Avg Days to Close</th><th>Overdue (Past SLA)</th></tr>${execHtml}</table></div>
+      <div style="overflow-x:auto;"><table><tr><th>Lead Owner (Created By)</th><th>Leads Owned</th><th>Active</th><th>Acquired</th><th>Dropped</th><th>Conversion %</th><th>Avg Days to Close</th><th>Overdue (Past SLA)</th><th>Currently Assigned (Active)</th></tr>${execHtml}</table></div>
     </div>
 
     <h2 class="section-title">Source-wise Performance</h2>
@@ -2802,7 +2822,7 @@ function renderList(){
         <div><label>Status</label><select id="lf-stage">
           <option value="">All statuses</option>${STAGES.map(s=>`<option value="${s.key}" ${listFilters.stage===s.key?'selected':''}>${s.label}</option>`).join('')}
         </select></div>
-        <div><label>Lead Created By</label><select id="lf-creator">
+        <div><label>Lead Owner (Created By)</label><select id="lf-creator">
           <option value="">Anyone</option>${[...new Set(allLeads.map(leadCreatorName))].sort().map(n=>`<option value="${n}" ${listFilters.createdBy===n?'selected':''}>${n}</option>`).join('')}
         </select></div>
         <div><label>Land Classification Type</label><select id="lf-class">
@@ -2843,7 +2863,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Created By</th><th>Lead Owner</th><th>Follow-up</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Lead Owner</th><th>Assigned To</th><th>Follow-up</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -4362,40 +4382,33 @@ function renderLeadDetailPage(){
       <button class="btn btn-sm btn-ghost" id="ld-back" style="margin-bottom:12px;">&larr; Back</button>
       <div class="card"><p>This lead could not be found — it may have been deleted, or is outside what you can access.</p></div>`;
   }
-  const idx = STAGE_INDEX[l.stage];
-  const track = STAGES.map((s,i)=>`<span class="stage-pill ${i<idx?'done':(i===idx?'now':'')}">${s.label}</span>`).join('');
+  // One outlined sheet with light-blue section bands (IN4Suite style), not
+  // separate floating cards. Back / Modify / Print sit centred at the end.
+  const editing = leadEditMode && canModifyLeadDetails(l);
   return `
     <div class="page-header">
       <h1>${l.leadId} — ${l.village||l.siteLocation||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h1>
-      <button class="btn btn-sm btn-ghost" id="ld-back">&larr; Back</button>
     </div>
-    <div class="stage-track">${track}</div>
-    <div class="card" style="margin-bottom:14px;">
-      <h2 class="section-title" style="margin-top:0;">Lead Details</h2>
-      ${renderOverviewTab(l)}
-    </div>
-    ${(leadEditMode && canModifyLeadDetails(l)) ? '' : `<div class="card" style="margin-bottom:14px;">
-      <h2 class="section-title" style="margin-top:0;">Location Map</h2>
-      ${renderLocationMapView(l)}
-    </div>`}
-    <div class="two-col">
-      <div class="card">
-        <h2 class="section-title" style="margin-top:0;">Status &amp; Actions</h2>
-        ${renderStageTab(l)}
+    <div class="erp-sheet">
+      <div class="erp-band">${editing ? 'Modify Lead' : 'Lead Details'}</div>
+      <div class="erp-body">${renderOverviewTab(l)}</div>
+      ${editing ? '' : `
+      <div class="erp-split">
+        <div><div class="erp-band">Location Details</div><div class="erp-body">${renderLocationFields(l)}</div></div>
+        <div><div class="erp-band">Location Map</div><div class="erp-body">${renderLocationMapBox(l)}</div></div>
       </div>
-      <div class="card">
-        <h2 class="section-title" style="margin-top:0;">Documents</h2>
-        ${renderDocumentsSection(l)}
+      <div class="erp-split">
+        <div><div class="erp-band">Status &amp; Actions</div><div class="erp-body">${renderStageTab(l)}</div></div>
+        <div><div class="erp-band">Documents</div><div class="erp-body">${renderDocumentsSection(l)}</div></div>
       </div>
+      <div class="erp-band">Audit Trail</div>
+      <div class="erp-body">${renderHistoryTab(l)}</div>`}
     </div>
-    <div class="card" style="margin-top:14px;">
-      <h2 class="section-title" style="margin-top:0;">Audit Trail</h2>
-      ${renderHistoryTab(l)}
-    </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;">
-      <button class="btn btn-sm btn-ghost" id="ld-back-bottom">&larr; Back</button>
-      <button class="btn btn-sm btn-ghost" onclick="window.print()">Print</button>
-    </div>`;
+    ${editing ? '' : `<div class="erp-actions">
+      <button class="btn btn-ghost" id="ld-back-bottom">&larr; Back</button>
+      ${canModifyLeadDetails(l) ? `<button class="btn btn-teal" id="ov-edit-details">✎ Modify</button>` : ''}
+      <button class="btn btn-ghost" onclick="window.print()">Print</button>
+    </div>`}`;
 }
 
 function wireLeadDetailViewEvents(){
@@ -4422,17 +4435,23 @@ function wireLeadDetailViewEvents(){
 const DEFAULT_MAP_CENTER = { lat:12.9716, lng:80.1500 }; // Chennai
 let _activeMaps = [];
 function destroyMaps(){ _activeMaps.forEach(m=>{ try{ m.remove(); }catch(e){} }); _activeMaps = []; }
-function renderLocationMapView(l){
+function renderLocationFields(l){
   const g = leadGeo(l);
   const url = googleMapsUrl(l);
   return `
-    <div class="form-grid" style="margin-bottom:8px;">
-      <div><label>Location Pin</label><div>${l.googlePin ? (/^https?:/.test(l.googlePin) ? `<a href="${l.googlePin}" target="_blank" rel="noopener">${l.googlePin}</a>` : l.googlePin) : '—'}</div></div>
-      <div><label>Coordinates</label><div>${g ? (g.lat.toFixed(6)+', '+g.lng.toFixed(6)) : '—'}</div></div>
+    <div class="form-grid one-col">
+      <div><label>Site Location</label><div>${l.siteLocation||'—'}</div></div>
+      <div><label>Village</label><div>${l.village||'—'}</div></div>
+      <div><label>Location Pin</label><div style="word-break:break-all;">${l.googlePin ? (/^https?:/.test(l.googlePin) ? `<a href="${l.googlePin}" target="_blank" rel="noopener">${l.googlePin}</a>` : l.googlePin) : '—'}</div></div>
+      <div><label>Latitude</label><div>${g ? g.lat.toFixed(6) : '—'}</div></div>
+      <div><label>Longitude</label><div>${g ? g.lng.toFixed(6) : '—'}</div></div>
       <div><label>Open</label><div>${url ? `<a href="${url}" target="_blank" rel="noopener">Open in Google Maps ↗</a>` : '—'}</div></div>
-    </div>
-    ${g ? `<div id="ld-map" class="map-box"></div>`
-        : `<div class="empty">No exact location pinned yet${l.googlePin?' (a short Google share link can\'t be read as coordinates)':''} — use ✎ Edit Details and click the map to drop a pin.</div>`}`;
+    </div>`;
+}
+function renderLocationMapBox(l){
+  const g = leadGeo(l);
+  return g ? `<div id="ld-map" class="map-box"></div>`
+    : `<div class="map-box" style="display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;"><span class="empty">No exact location pinned yet${l.googlePin?' (a short Google share link can\'t be read as coordinates)':''}.<br>Click ✎ Modify and drop a pin on the map.</span></div>`;
 }
 function mountViewMap(elId, g){
   const el = document.getElementById(elId);
@@ -4591,8 +4610,8 @@ function renderOverviewTab(l){
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
         <div><label>Project</label><select id="ov-e-project"><option value="" ${!l.projectCode?'selected':''}>— none —</option>${DB.getMasters('projects').map(p=>`<option value="${p.code}" ${p.code===l.projectCode?'selected':''}>${p.code} — ${p.name}</option>`).join('')}</select></div>
-        <div><label>Lead Created By</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
-        <div><label>Lead Owner (Assigned)</label>${canAssign
+        <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
+        <div><label>Assigned Executive</label>${canAssign
           ? `<select id="ov-e-exec"><option value="${l.assignedExecutive||''}" selected>${l.assignedExecutive||'— unassigned —'} (current)</option>${targets.map(u=>`<option value="${u.name}">${u.name}${u.designation?' — '+u.designation:''}</option>`).join('')}</select>`
           : `<input type="text" value="${l.assignedExecutive||'—'}" disabled title="You can't reassign this lead.">`}</div>
         <div><label>Reassign Remarks</label><input type="text" id="ov-e-exec-remarks" placeholder="Only used if the executive changes"></div>
@@ -4615,15 +4634,14 @@ function renderOverviewTab(l){
         <div><label>Follow Up Date</label><input type="date" id="ov-e-nextcall" value="${l.nextCallDate||''}"></div>
         ${locationPickerHtml('ov-e', l.googlePin, leadGeo(l))}
       </div>
-      <div style="margin-top:10px;display:flex;gap:8px;">
-        <button class="btn btn-sm btn-teal" id="ov-save-details">Save Details</button>
-        <button class="btn btn-sm btn-ghost" id="ov-cancel-details">Cancel</button>
+      <div class="erp-actions" style="margin-top:16px;">
+        <button class="btn btn-ghost" id="ov-cancel-details">Cancel</button>
+        <button class="btn btn-teal" id="ov-save-details">Save</button>
       </div>`;
   }
 
   const cls = classDetailText(l);
   return `
-    ${canEdit ? `<div style="display:flex;justify-content:flex-end;margin:-6px 0 8px;"><button class="btn btn-sm btn-ghost" id="ov-edit-details">✎ Edit Details</button></div>` : ''}
     <div class="form-grid">
       <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
       <div><label>Site Location</label><div>${l.siteLocation||'—'}</div></div>
@@ -4632,8 +4650,8 @@ function renderOverviewTab(l){
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
       <div><label>Project</label><div>${projectLabel(l.projectCode)}</div></div>
-      <div><label>Lead Created By</label><div>${leadCreatorName(l)}</div></div>
-      <div><label>Lead Owner (Assigned)</label><div>${l.assignedExecutive||'—'}</div></div>
+      <div><label>Lead Owner (Created By)</label><div>${leadCreatorName(l)}</div></div>
+      <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
       <div><label>Survey Number</label><div>${l.surveyNumber||'—'}</div></div>
       <div><label>Land Classification Type</label><div>${l.landClassification||'—'}</div></div>
