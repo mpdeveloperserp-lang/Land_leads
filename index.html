@@ -854,6 +854,9 @@ function gateRoleLabels(fromKey, toKey){ return findGates(fromKey, toKey).map(g=
 // master entry existing, which isn't always true yet when a lead needs to
 // be logged quickly; Site Location is free text and always obtainable.
 const DEFAULT_FIELD_CONFIG = [
+  // Land Identification Name (IN4Suite Land: "Land Identification Name*",
+  // e.g. "Green Bay 2.0") — the short name the land is known by.
+  { field:'landIdentificationName', label:'Land Identification Name', visible:true, mandatory:true, filter:false },
   { field:'siteLocation',       label:'Site Location',          visible:true, mandatory:true,  filter:false },
   { field:'contactNumber',      label:'Contact Number',         visible:true, mandatory:false, filter:false },
   { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:true,  filter:false },
@@ -898,7 +901,7 @@ const FIELD_TO_INPUT = {
   extent:['nl-extent-val'], price:['nl-price-val'],
   landownerName:['nl-owner-name'], landownerPhone:['nl-owner-phone'],
   mediatorName:['nl-med'], nextCallDate:['nl-nextcall'],
-  contactNumber:['nl-contact'], roadWidth:['nl-road'], frontage:['nl-frontage'],
+  contactNumber:['nl-contact'], landIdentificationName:['nl-landname'], roadWidth:['nl-road'], frontage:['nl-frontage'],
   firstCallDate:['nl-firstcall'], siteVisitDate:['nl-sitevisit'],
 };
 
@@ -2283,7 +2286,7 @@ function leadMatchesFilters(l, f){
   if(f.letter){ const v=(l.village||'').trim().toUpperCase(); if(!v.startsWith(f.letter)) return false; }
   if(f.q){
     const q = f.q.toLowerCase();
-    const hay = [l.leadId,l.village,l.siteLocation,l.landownerName,l.surveyNumber,l.contactNumber,l.landownerPhone].join(' ').toLowerCase();
+    const hay = [l.leadId,l.landIdentificationName,l.village,l.siteLocation,l.landownerName,l.surveyNumber,l.contactNumber,l.landownerPhone].join(' ').toLowerCase();
     if(!hay.includes(q)) return false;
   }
   return true;
@@ -2485,7 +2488,7 @@ function exportRowsPDF(rows, filename, title){
 }
 function leadsReportRows(){
   return visibleLeads().map(l=>({
-    'Lead ID': l.leadId, 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
+    'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
     Stage: stageLabel(l.stage), Source: l.leadSource||'',
     'Channel Partner': l.channelPartnerCode||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
     'Land Classification Type': l.landClassification||'',
@@ -2775,6 +2778,7 @@ function renderList(){
     return `<tr>
       <td><input type="checkbox" class="row-check" data-id="${l.id}" ${checked}></td>
       <td class="clickable-row" data-id="${l.id}"><b>${l.leadId}</b></td>
+      <td class="clickable-row" data-id="${l.id}">${l.landIdentificationName||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.village||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.contactNumber||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.landClassification||'—'}</td>
@@ -2788,7 +2792,7 @@ function renderList(){
       <td class="clickable-row" data-id="${l.id}">${followUp}</td>
       <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="14" class="empty">No leads match these filters</td></tr>`;
+  }).join('') || `<tr><td colspan="15" class="empty">No leads match these filters</td></tr>`;
 
   return `
     <div class="page-header">
@@ -2830,7 +2834,7 @@ function renderList(){
 
     <div class="toolbar" style="justify-content:space-between;">
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
-        <input type="text" id="f-q" placeholder="Search village, owner, contact, survey no…" value="${listFilters.q}">
+        <input type="text" id="f-q" placeholder="Search land name, village, owner, contact, survey no…" value="${listFilters.q}">
         <div class="index-nav">${letters.map(L=>{
           const isAll = L==='ALL';
           const active = isAll ? !listFilters.letter : listFilters.letter===L;
@@ -2842,7 +2846,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Lead Owner</th><th>Assigned To</th><th>Follow-up</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Land Name</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Lead Owner</th><th>Assigned To</th><th>Follow-up</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -2914,7 +2918,7 @@ function wireListEvents(){
     const source = selectedLeadIds.size ? filtered.filter(l=>selectedLeadIds.has(l.id)) : filtered;
     if(!source.length){ alert('Nothing to export.'); return; }
     const rows = source.map(l=>({
-      'Lead ID': l.leadId, Village: l.village||'', 'Contact Number': l.contactNumber||'', 'Land Classification Type': l.landClassification||'', 'Survey No.': l.surveyNumber||'',
+      'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', Village: l.village||'', 'Contact Number': l.contactNumber||'', 'Land Classification Type': l.landClassification||'', 'Survey No.': l.surveyNumber||'',
       Extent: l.extentValue, 'Extent Unit': EXTENT_UNITS[l.extentUnit]?.label||'',
       Price: l.priceValue, 'Price Unit': EXTENT_UNITS[l.priceUnit]?.label||'',
       Landowner: l.landownerName||'', Source: l.leadSource||'', Executive: l.assignedExecutive||''
@@ -4177,6 +4181,7 @@ function renderNewLeadView(){
     <div class="page-header"><h1>New Land Lead</h1></div>
     <div class="card">
       <div class="form-grid">
+        <div data-field="landIdentificationName"><label>Land Identification Name</label><input type="text" id="nl-landname" placeholder="e.g. Green Bay 2.0"></div>
         <div data-field="siteLocation"><label>Site Location</label><input type="text" id="nl-loc"></div>
         <div data-field="contactNumber"><label>Contact Number</label><input type="text" id="nl-contact" ${PHONE_ATTRS}></div>
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
@@ -4289,6 +4294,7 @@ function wireNewLeadViewEvents(){
       geo: readPickerGeo('nl') || null,
       landClassification: document.getElementById('nl-class').value,
       contactNumber: document.getElementById('nl-contact').value.trim(),
+      landIdentificationName: document.getElementById('nl-landname').value.trim(),
       roadWidth: numOrNull('nl-road'), frontage: numOrNull('nl-frontage'),
       firstCallDate: document.getElementById('nl-firstcall').value,
       siteVisitDate: document.getElementById('nl-sitevisit').value,
@@ -4370,7 +4376,7 @@ function renderLeadDetailPage(){
   const editing = leadEditMode && canModifyLeadDetails(l);
   return `
     <div class="page-header">
-      <h1>${l.leadId} — ${l.village||l.siteLocation||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h1>
+      <h1>${l.leadId} — ${l.landIdentificationName||l.village||l.siteLocation||'—'} ${l.onHold&&l.onHold.active?'<span class="badge badge-warn" style="margin-left:8px;">On Hold</span>':''}</h1>
     </div>
     <div class="erp-sheet">
       <div class="erp-band">${editing ? 'Modify Lead' : 'Lead Details'}</div>
@@ -4397,7 +4403,7 @@ function renderLeadDetailPage(){
 // Modify form: the same Configure-page Mandatory flags as the New Lead form
 // (red * on the label, and enforced on Save).
 const MODIFY_FIELD_INPUTS = {
-  siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
+  landIdentificationName:'ov-e-landname', siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
   channelPartnerCode:'ov-e-cp', village:'ov-e-village', surveyNumber:'ov-e-survey',
   googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val', price:'ov-e-price-val',
   roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner-name', landownerPhone:'ov-e-owner-phone',
@@ -4623,6 +4629,7 @@ function renderOverviewTab(l){
     return `
       <div class="form-grid">
         <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
+        <div><label>Land Identification Name</label><input type="text" id="ov-e-landname" value="${(l.landIdentificationName||'').replace(/"/g,'&quot;')}"></div>
         <div><label>Site Location</label><input type="text" id="ov-e-loc" value="${l.siteLocation||''}"></div>
         <div><label>Contact Number</label><input type="text" id="ov-e-contact" ${PHONE_ATTRS} value="${l.contactNumber||''}"></div>
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
@@ -4662,6 +4669,7 @@ function renderOverviewTab(l){
   return `
     <div class="form-grid">
       <div><label>Status</label><div><span class="badge badge-navy">${stageLabel(l.stage)}</span></div></div>
+      <div><label>Land Identification Name</label><div>${l.landIdentificationName||'—'}</div></div>
       <div><label>Site Location</label><div>${l.siteLocation||'—'}</div></div>
       <div><label>Contact Number</label><div>${l.contactNumber ? `<a href="tel:${l.contactNumber}">${l.contactNumber}</a>` : '—'}</div></div>
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
@@ -4920,6 +4928,7 @@ function wireDetailTabEvents(l){
         village: (val('ov-e-village')||'').trim(),
         siteLocation: (val('ov-e-loc')||'').trim(),
         contactNumber: (val('ov-e-contact')||'').trim(),
+        landIdentificationName: (val('ov-e-landname')||'').trim(),
         surveyNumber: (val('ov-e-survey')||'').trim(),
         googlePin: (val('ov-e-pin')||'').trim(),
         geo: geo || null,
