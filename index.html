@@ -114,6 +114,7 @@
   .save-list.open{display:block;}
   .save-list button{display:block;width:100%;text-align:left;background:none;border:none;padding:8px 14px;font-size:13px;color:var(--teal);cursor:pointer;}
   .save-list button:hover{background:#EEF0FA;}
+  body.role-readonly .write-only{display:none !important;}
   .req-star{color:var(--danger);font-weight:700;}
   .map-box{height:340px;border-radius:8px;border:1px solid var(--border);background:#eef1f5;z-index:0;}
   .map-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px;font-size:12px;color:var(--muted);}
@@ -515,23 +516,42 @@ const KNOWN_VIEWS = Object.keys(PAGE_TITLES);
 // Executive: only their own assigned leads. See the "Manage Users" nav
 // module — every Manager/Head is assigned who they are the "Reports To"
 // for, which drives the lead-visibility tree below.
-const ROLES = ['admin','manager','executive','sysadmin'];
-const ROLE_LABELS = { admin:'Head', manager:'Manager', executive:'Executive', sysadmin:'Admin' };
-const ROLE_RANK = { executive:1, manager:2, admin:3, sysadmin:0 };
+const ROLES = ['admin','manager','executive','sysadmin','management'];
+const ROLE_LABELS = { admin:'Head', manager:'Manager', executive:'Executive', sysadmin:'Admin', management:'Management' };
+const ROLE_RANK = { executive:1, manager:2, admin:3, sysadmin:0, management:0 };
+// Management — sees EVERYTHING (every lead, team and page it's given) but
+// can't change anything: no create, modify, status change, upload, assign,
+// or master/config edits. Enforced twice: write controls are hidden
+// (.write-only + the checks below), and every DB write method refuses
+// (see guardReadOnlyDB()).
+function isReadOnlyUser(u){ u = u || currentUser; return !!(u && u.role==='management'); }
+function guardReadOnlyDB(db){
+  const proto = Object.getPrototypeOf(db);
+  Object.getOwnPropertyNames(proto).forEach(name=>{
+    if(!/^(add|update|delete|toggle|save|reassign|create|change)/.test(name) || name==='addAuditEntry') return;
+    const orig = db[name];
+    if(typeof orig !== 'function') return;
+    db[name] = function(...args){
+      if(isReadOnlyUser()) return Promise.reject(new Error('Management has view-only access — changes are not allowed.'));
+      return orig.apply(this, args);
+    };
+  });
+  return db;
+}
 // Shipped defaults for the Page Access master — one array of role keys per
 // page. Note this governs PAGE access only; it is a separate layer from the
 // Executive->Manager->Head lead-visibility tree above, which still decides
 // which LEADS a Manager/Head/Executive sees regardless of what's set here.
 const DEFAULT_VIEW_ACCESS = {
-  dashboard: ['admin','manager','executive'],
-  list:      ['admin','manager','executive'],
+  dashboard: ['admin','manager','executive','management'],
+  list:      ['admin','manager','executive','management'],
   newLead:   ['admin','manager','executive'],
-  reports:   ['admin','manager'],
+  reports:   ['admin','manager','management'],
   // MIS Analytics (performance/aggregate KPIs, as distinct from Reports'
   // raw per-record tables) — same tier as Reports: Executive doesn't get
   // cross-team performance comparisons, matching the existing "Reports
   // isn't for Executive" precedent.
-  analytics: ['admin','manager'],
+  analytics: ['admin','manager','management'],
   configure: ['admin','sysadmin'],
   masters:   ['admin','sysadmin'],
   // Landowner & Land Parcel registries (MP Developers' Land Acquisition ERP
@@ -540,14 +560,14 @@ const DEFAULT_VIEW_ACCESS = {
   // landowner/survey details directly), Admin (sysadmin) starts unticked
   // here too until Head grants it via Page Access, matching that same
   // existing precedent.
-  landowners:  ['admin','manager','executive'],
+  landowners:  ['admin','manager','executive','management'],
   // Channel Partners (pulled out of the Head/Admin-only Masters page into
   // its own page — Sara's explicit request: "like a single page not in
   // masters") — same default tier as Landowners/Land Parcels, her explicit
   // choice over keeping it Head/Admin-only. Manager-wise CP ownership/
   // visibility (canSeeCP()) still applies on top of this page-access layer,
   // same as it always has.
-  channelPartners: ['admin','manager','executive'],
+  channelPartners: ['admin','manager','executive','management'],
   users:       ['admin','sysadmin'],
   workflow:    ['admin','sysadmin'],
   statusConfig:['admin','sysadmin'],
@@ -597,9 +617,13 @@ function refreshViewAccessFromDB(){
   const rows = (DB && DB.getPageAccess) ? DB.getPageAccess() : null;
   const source = (rows && rows.length) ? rows : Object.entries(DEFAULT_VIEW_ACCESS).map(([view,roles])=>({view, roles}));
   const next = {};
+  // Management is a newer role: until Page Access has been saved with it
+  // ticked anywhere, it gets its default pages (view-only ones).
+  const mgmtConfigured = source.some(r => (r.roles||[]).includes('management'));
   KNOWN_VIEWS.forEach(view=>{
     const row = source.find(r=>r.view===view);
     const roles = (row && row.roles && row.roles.length) ? row.roles.slice() : (DEFAULT_VIEW_ACCESS[view] || []).slice();
+    if(!mgmtConfigured && (DEFAULT_VIEW_ACCESS[view]||[]).includes('management') && !roles.includes('management')) roles.push('management');
     if(!roles.includes('admin')) roles.push('admin');
     next[view] = roles;
   });
@@ -642,7 +666,7 @@ function refreshUserPageOverridesFromDB(){
 // (same convention as before). Any active user in the tree can hold leads.
 function userByName(name){ return (DB.getUsers()||[]).find(u=>u.name===name); }
 function userByUid(uidVal){ return (DB.getUsers()||[]).find(u=>u.uid===uidVal); }
-function treeUsers(){ return (DB.getUsers()||[]).filter(u=>u.role!=='sysadmin'); }
+function treeUsers(){ return (DB.getUsers()||[]).filter(u=>u.role!=='sysadmin' && u.role!=='management'); }
 // uid → [direct reports] over ACTIVE users, rebuilt per call (user lists are small).
 function childrenMap(){
   const m = {};
@@ -686,7 +710,7 @@ function isTopHead(user){ return !!(user && user.role==='admin' && !user.reports
 // Is a lead/record owned by `ownerName` within `user`'s view?
 function ownerVisibleTo(user, ownerName, scope){
   if(!user) return false;
-  if(user.role==='sysadmin') return true;
+  if(user.role==='sysadmin' || user.role==='management') return true;
   scope = scope || teamScopeUids(user);
   const owner = userByName(ownerName);
   if(owner) {
@@ -701,7 +725,7 @@ function isTeammateOf(user, otherName){ return ownerVisibleTo(user, otherName); 
 function visibleLeads(){
   const all = DB.getLeads();
   if(!currentUser) return [];
-  if(currentUser.role==='sysadmin') return all;
+  if(currentUser.role==='sysadmin' || currentUser.role==='management') return all;
   const scope = teamScopeUids(currentUser);
   // A lead is visible through its assignee OR its owner (the creator), so
   // a lead owner keeps seeing a lead after handing it to someone else.
@@ -713,7 +737,7 @@ function visibleLeads(){
 function visibleExecutives(){
   if(!currentUser) return [];
   const all = treeUsers();
-  if(currentUser.role==='sysadmin') return all;
+  if(currentUser.role==='sysadmin' || currentUser.role==='management') return all;
   const scope = teamScopeUids(currentUser);
   return all.filter(u => ownerVisibleTo(currentUser, u.name, scope));
 }
@@ -749,7 +773,7 @@ function cpCreator(cp){
 // in spirit — a manager's shared contacts belong to the whole team they run.
 function canSeeCP(cp, user){
   if(!user) return false;
-  if(user.role==='sysadmin') return true; // Admin — full visibility, same precedent as everywhere else
+  if(user.role==='sysadmin' || user.role==='management') return true; // Admin / Management — full visibility
   const creator = cpCreator(cp);
   if(!creator) return true; // legacy/unowned — shared company resource, visible to all
   if(creator.uid === user.uid) return true; // always see your own
@@ -774,7 +798,7 @@ function cpLeadCount(code){
 // canVerifyDocument, canRecordLegalOrValuation, canRecordFinancialEntry):
 // an Executive can view/add/edit, but not delete.
 function canDeleteChannelPartner(){
-  return !!(currentUser && currentUser.role !== 'executive');
+  return !!(currentUser && currentUser.role !== 'executive' && !isReadOnlyUser());
 }
 // "Link/Change Owner" — re-stamps createdByUid/createdByName on an existing
 // Channel Partner record (see cpCreator()'s own comment on the legacy-data
@@ -784,7 +808,7 @@ function canDeleteChannelPartner(){
 // now). Same narrower-than-Executive tier as deletion above — an Executive
 // never gets this action at all, regardless of whose CP it is.
 function canLinkCPOwner(){
-  return !!(currentUser && currentUser.role !== 'executive');
+  return !!(currentUser && currentUser.role !== 'executive' && !isReadOnlyUser());
 }
 // Who a Manager/Head/Admin may link/re-link a Channel Partner's owner to.
 // Manager: themselves or one of their own reporting Executives — same
@@ -1006,6 +1030,7 @@ const DEFAULT_USERS_SEED = [
   { uid:'seed-admin',   name:'Saravanan', email:'Saravanan@mpdevelopers.com', phone:'', role:'admin', password:'123456', active:true, reportsTo:'' },
   { uid:'seed-manager', name:'Land Manager', email:'manager@demo.local', phone:'', role:'manager',  password:'manager123', active:true, reportsTo:'seed-admin' },
   { uid:'seed-karthik', name:'Karthik R',  email:'karthik@demo.local', phone:'', role:'executive', password:'exec123',    active:true, reportsTo:'seed-manager' },
+  { uid:'seed-mgmt',    name:'MD Office',  email:'mgmt@demo.local',   phone:'', role:'management', password:'mgmt123', active:true, reportsTo:'' },
   { uid:'seed-divya',   name:'Divya S',    email:'divya@demo.local',   phone:'', role:'executive', password:'exec123',    active:true, reportsTo:'seed-manager' },
 ];
 
@@ -1684,7 +1709,7 @@ let leadEditMode = false;
 // lead's details" capability, never a reassignment one (see
 // renderOverviewTab()).
 function canModifyLeadDetails(lead){
-  if(!currentUser) return false;
+  if(!currentUser || isReadOnlyUser()) return false;
   if(currentUser.role==='admin' || currentUser.role==='manager' || currentUser.role==='sysadmin') return true;
   if(currentUser.role==='executive') return !!(lead && lead.assignedExecutive === currentUser.name);
   return false;
@@ -1717,7 +1742,7 @@ let reassignMode = false;
 // isTeammateOf() reach visibleLeads() already grants an Executive on every
 // other page, not a company-wide reach.
 function canReassignLead(lead){
-  if(!currentUser || !lead) return false;
+  if(!currentUser || !lead || isReadOnlyUser()) return false;
   if(currentUser.role==='sysadmin') return true;
   // Org tree: anyone may reassign a lead they can see (their own sub-tree
   // and their team's). The assignment now lives in Edit Details.
@@ -1739,7 +1764,7 @@ function eligibleReassignmentTargets(lead){
 function validateReassignTarget(lead, newExecutiveName){
   if(!currentUser || !canReassignLead(lead)) throw new Error('You are not authorized to reassign this lead.');
   const newExec = userByName(newExecutiveName);
-  if(!newExec || newExec.role==='sysadmin' || newExec.active===false) throw new Error('That person is not an eligible, active user in the org tree.');
+  if(!newExec || newExec.role==='sysadmin' || newExec.role==='management' || newExec.active===false) throw new Error('That person is not an eligible, active user in the org tree.');
   if(!eligibleReassignmentTargets(lead).some(u=>u.uid===newExec.uid)) throw new Error('As an Executive you can only reassign within your own team.');
   return newExec;
 }
@@ -1758,7 +1783,7 @@ function validateReassignTarget(lead, newExecutiveName){
 // Executives having narrower rights than the roles above them (see
 // canModifyLeadDetails()).
 function canDeleteLandRegistry(){
-  return !!(currentUser && currentUser.role !== 'executive');
+  return !!(currentUser && currentUser.role !== 'executive' && !isReadOnlyUser());
 }
 function landownerById(id){ return (DB.getAllLandowners()||[]).find(o=>o.id===id); }
 // Project Mapping — resolves a lead's stored projectCode against the
@@ -1841,7 +1866,7 @@ async function boot(){
       }
       const fsdb = firebase.firestore();
       const storage = (typeof firebase.storage === 'function') ? firebase.storage() : null;
-      DB = new FirestoreDB(fsdb, storage);
+      DB = guardReadOnlyDB(new FirestoreDB(fsdb, storage));
       DB.onChange(()=>{
         refreshStagesFromDB();
         refreshWorkflowFromDB();
@@ -1865,13 +1890,13 @@ async function boot(){
       renderDemoBanner(false);
     }catch(err){
       console.error('Firebase init failed — falling back to demo mode.', err);
-      DB = new MemoryDB();
+      DB = guardReadOnlyDB(new MemoryDB());
       await DB.init();
       showConnectionBadge(false, err.message);
       renderDemoBanner(true, 'connection error: ' + err.message);
     }
   } else {
-    DB = new MemoryDB();
+    DB = guardReadOnlyDB(new MemoryDB());
     await DB.init();
     showConnectionBadge(false, isPlaceholder ? 'no Firebase config set yet' : 'SDK did not load');
     renderDemoBanner(true, isPlaceholder ? 'no Firebase config set yet' : 'the Firebase SDK did not load');
@@ -2009,6 +2034,7 @@ async function ensureLandClassTypes(){
   }catch(err){ console.warn('Could not add Land Classification Types', err); }
 }
 function enterApp(){
+  document.body.classList.toggle('role-readonly', isReadOnlyUser());
   ensureLandClassTypes();
   document.getElementById('auth-root').style.display = 'none';
   document.getElementById('auth-root').innerHTML = '';
@@ -2033,7 +2059,7 @@ function callsDueFor(leads){
     .sort((a,b)=> String(a.nextCallDate).localeCompare(String(b.nextCallDate)));
 }
 function showCallReminderPopup(){
-  if(!currentUser || currentUser.role==='sysadmin') return;
+  if(!currentUser || currentUser.role==='sysadmin' || isReadOnlyUser()) return;
   const due = callsDueFor(visibleLeads());
   const mine = due.filter(l=>l.assignedExecutive===currentUser.name || l.createdByName===currentUser.name);
   const team = currentUser.role==='executive' ? [] : due.filter(l=>!mine.includes(l));
@@ -2119,7 +2145,7 @@ function showLoginScreen(errorMsg){
         </form>
         <div style="text-align:center;margin-top:14px;font-size:12px;"><a href="#" id="auth-forgot" style="color:var(--teal);">Forgot password?</a></div>
         <div style="text-align:center;margin-top:8px;font-size:12px;"><a href="#" id="auth-bootstrap-link" style="color:var(--muted);">Setting this up for the first time? Create the admin account</a></div>
-        ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>Saravanan@mpdevelopers.com</b> / 123456 (Admin), <b>manager@demo.local</b> / manager123 (Manager), or <b>karthik@demo.local</b> / exec123 (Executive).</p>` : ''}
+        ${!DB.isLive() ? `<p style="font-size:11px;color:var(--muted);margin-top:16px;line-height:1.6;">Demo mode — try <b>Saravanan@mpdevelopers.com</b> / 123456 (Admin), <b>manager@demo.local</b> / manager123 (Manager), <b>karthik@demo.local</b> / exec123 (Executive), or <b>mgmt@demo.local</b> / mgmt123 (Management, view only).</p>` : ''}
         <div class="auth-tag">TRUST <b>FOREVER</b></div>
       </div>
       </div>
@@ -3227,7 +3253,7 @@ function renderList(){
   return `
     <div class="page-header">
       <h1>All Leads</h1>
-      <button class="btn btn-gold" id="btn-new-lead">+ Create New Lead</button>
+      <button class="btn btn-gold write-only" id="btn-new-lead">+ Create New Lead</button>
     </div>
 
     <div class="card filter-panel">
@@ -3582,7 +3608,7 @@ function renderChannelPartnersView(){
         ${rows}
       </table>
     </div>
-    <div class="card">
+    <div class="card write-only">
       <h2 class="section-title" style="margin-top:0;">Add Channel Partner</h2>
       <div class="form-grid">
         ${CP_DEF.fields.map(f=>{
@@ -3698,8 +3724,8 @@ function renderCPDetailPage(){
     </div>
     ${linkForm}
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn btn-sm btn-ghost" id="cpd-modify">✎ Modify</button>
-      <button class="btn btn-sm btn-ghost" id="cpd-toggle" data-cp-toggle="${cp.id}">${cp.active!==false?'Deactivate':'Activate'}</button>
+      <button class="btn btn-sm btn-ghost write-only" id="cpd-modify">✎ Modify</button>
+      <button class="btn btn-sm btn-ghost write-only" id="cpd-toggle" data-cp-toggle="${cp.id}">${cp.active!==false?'Deactivate':'Activate'}</button>
       ${canLink && !isLinking ? `<button class="btn btn-sm btn-ghost" id="cpd-link-open" data-cp-link-open="${cp.id}">${creator?'Change':'Link'} Owner</button>` : ''}
       ${canDelete ? `<button class="btn btn-sm btn-danger" id="cpd-delete" data-cp-delete="${cp.id}">Delete</button>` : ''}
     </div>`;
@@ -3818,9 +3844,9 @@ function wireCPDetailEvents(){
 // the tree — never to themselves or to someone below them (that would make
 // a loop).
 function reportsToCandidates(role, editingUid){
-  if(role==='sysadmin') return [];
+  if(role==='sysadmin' || role==='management') return [];
   const below = editingUid ? subtreeUids(editingUid) : new Set();
-  return DB.getAllUsers().filter(u => u.role!=='sysadmin' && u.active!==false && !below.has(u.uid));
+  return DB.getAllUsers().filter(u => u.role!=='sysadmin' && u.role!=='management' && u.active!==false && !below.has(u.uid));
 }
 function reportsToOptionsHtml(role, selectedUid, editingUid){
   const list = reportsToCandidates(role, editingUid);
@@ -3828,7 +3854,7 @@ function reportsToOptionsHtml(role, selectedUid, editingUid){
 }
 // Org chart — every top-of-tree person with their full reporting tree below.
 function renderOrgChart(){
-  const users = DB.getAllUsers().filter(u=>u.role!=='sysadmin');
+  const users = DB.getAllUsers().filter(u=>u.role!=='sysadmin' && u.role!=='management');
   const byParent = {};
   users.forEach(u=>{ const p = (u.reportsTo && users.some(x=>x.uid===u.reportsTo)) ? u.reportsTo : '_root'; (byParent[p] = byParent[p]||[]).push(u); });
   const leadCount = name => (DB.getLeads()||[]).filter(l=>l.assignedExecutive===name && l.stage!=='closed').length;
@@ -3845,11 +3871,37 @@ function renderOrgChart(){
   };
   const roots = (byParent['_root']||[]).sort((a,b)=> (a.role==='admin'?0:1)-(b.role==='admin'?0:1) || a.name.localeCompare(b.name));
   const html = roots.map(node).join('');
-  const admins = DB.getAllUsers().filter(u=>u.role==='sysadmin');
+  const admins = DB.getAllUsers().filter(u=>u.role==='sysadmin' || u.role==='management');
   return `<ul class="org-tree">${html || '<li class="empty">No users yet.</li>'}</ul>
-    ${admins.length ? `<p style="font-size:12px;color:var(--muted);margin-top:10px;">Outside the tree (Admin — system configuration only): ${admins.map(a=>a.name).join(', ')}</p>` : ''}`;
+    ${admins.length ? `<p style="font-size:12px;color:var(--muted);margin-top:10px;">Outside the tree (Admin — system configuration only; Management — view everything): ${admins.map(a=>a.name).join(', ')}</p>` : ''}`;
 }
 
+// Leads are linked to people BY NAME (Assigned Executive / Lead Owner). If a
+// user's name in Manage Users doesn't exactly match the name stored on the
+// leads (e.g. leads say "Renju" but the account was renamed "Renju Raghu"),
+// that person sees none of their leads. These helpers find such names and
+// move leads/channel partners over to the user's current name.
+function unmatchedLeadNames(){
+  const users = new Set((DB.getAllUsers()||[]).map(u=>u.name));
+  const names = new Set();
+  (DB.getLeads()||[]).forEach(l=>{ [l.assignedExecutive, l.createdByName].forEach(n=>{ if(n && n!=='Unassigned' && n!=='—' && !users.has(n)) names.add(n); }); });
+  return [...names].sort();
+}
+async function relinkNamesToUser(oldNames, user){
+  const set = new Set(oldNames.filter(n=>n && n!==user.name));
+  if(!set.size) return 0;
+  let changed = 0;
+  for(const l of (DB.getLeads()||[]).slice()){
+    const patch = {};
+    if(set.has(l.assignedExecutive)) patch.assignedExecutive = user.name;
+    if(set.has(l.createdByName)){ patch.createdByName = user.name; patch.createdByUid = user.uid; }
+    if(Object.keys(patch).length){ await DB.updateLead(l.id, patch); changed++; }
+  }
+  for(const cp of (DB.getAllMasters('channelPartners')||[]).slice()){
+    if(set.has(cp.createdByName)) await DB.updateMaster('channelPartners', cp.id, { createdByName: user.name, createdByUid: user.uid });
+  }
+  return changed;
+}
 function renderUsersView(){
   const items = DB.getAllUsers();
   const editing = editingMasterId ? items.find(u=>u.uid===editingMasterId) : null;
@@ -3870,10 +3922,11 @@ function renderUsersView(){
   }).join('') || `<tr><td colspan="8" class="empty">No users yet.</td></tr>`;
 
   const roleForForm = editing ? editing.role : ROLES[0];
-  const reportsToHidden = roleForForm==='sysadmin';
+  const reportsToHidden = roleForForm==='sysadmin' || roleForForm==='management';
 
   return `
     <div class="page-header"><h1>Manage Users</h1></div>
+    ${unmatchedLeadNames().length ? `<div class="banner"><div><b>Some leads are recorded under names that don't match any user:</b> ${unmatchedLeadNames().map(n=>`"${n}"`).join(', ')}. Until they're linked to a user, only top-level Heads, Admin and Management can see those leads. The person and their team can't. Click ✎ on the right person, choose the name in <b>Link leads recorded as</b>, and click Update.</div></div>` : ''}
     <p style="font-size:12.5px;color:var(--muted);margin-top:-4px;">${DB.isLive() ? 'Creating a user here sets up a real sign-in — you stay signed in as yourself while it\'s created.' : 'Demo mode — created users are in-memory mock logins for previewing roles; nothing is saved.'} <b>Role</b> controls what a person is allowed to do (pages, approvals, edit rights). <b>Reports To</b> builds the org tree below — any number of levels. Everyone sees the leads of the people below them, and people who report to the same person share each other's leads as one team.</p>
     <div class="card" style="margin-bottom:14px;">
       <h2 class="section-title" style="margin-top:0;">Org Tree</h2>
@@ -3891,6 +3944,7 @@ function renderUsersView(){
         <div><label>Name${REQ}</label><input type="text" id="uf-name" value="${editing?editing.name:''}"></div>
         <div><label>Email${editing?'':REQ}</label><input type="email" id="uf-email" value="${editing?editing.email:''}" ${editing?'disabled':''}></div>
         <div><label>Phone</label><input type="text" id="uf-phone" ${PHONE_ATTRS} value="${editing?(editing.phone||''):''}"></div>
+        ${editing && unmatchedLeadNames().length ? `<div><label>Link leads recorded as</label><select id="uf-relink"><option value="">— none —</option>${unmatchedLeadNames().map(n=>`<option value="${n.replace(/"/g,'&quot;')}">${n} (${DB.getLeads().filter(l=>l.assignedExecutive===n||l.createdByName===n).length} leads)</option>`).join('')}</select></div>` : ''}
         <div><label>Designation</label><input type="text" id="uf-designation" value="${editing?(editing.designation||''):''}" placeholder="e.g. VP, GM, AGM, Team Lead"></div>
         <div><label>Role${REQ}</label><select id="uf-role">${ROLES.map(r=>`<option value="${r}" ${roleForForm===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
         <div id="uf-reports-to-wrap" ${reportsToHidden ? 'style="display:none;"' : ''}><label>Reports To</label><select id="uf-reports-to">${reportsToOptionsHtml(roleForForm, editing?editing.reportsTo:'', editing?editing.uid:'')}</select></div>
@@ -3930,7 +3984,7 @@ function wireUsersEvents(){
     const role = roleSelect.value;
     const wrap = document.getElementById('uf-reports-to-wrap');
     const sel = document.getElementById('uf-reports-to');
-    if(role==='sysadmin'){
+    if(role==='sysadmin' || role==='management'){
       wrap.style.display = 'none';
     } else {
       wrap.style.display = '';
@@ -3943,7 +3997,7 @@ function wireUsersEvents(){
     const email = document.getElementById('uf-email').value.trim();
     const phone = document.getElementById('uf-phone').value.trim();
     const role = document.getElementById('uf-role').value;
-    const reportsTo = role==='sysadmin' ? '' : (document.getElementById('uf-reports-to')?.value || '');
+    const reportsTo = (role==='sysadmin' || role==='management') ? '' : (document.getElementById('uf-reports-to')?.value || '');
     const designation = (document.getElementById('uf-designation')?.value || '').trim();
     if(editingMasterId && reportsTo && subtreeUids(editingMasterId).has(reportsTo)){ alert('That would create a loop — someone cannot report to a person below them.'); return; }
     if(!name){ alert('Name is required.'); return; }
@@ -3952,7 +4006,14 @@ function wireUsersEvents(){
       const newPassword = document.getElementById('uf-password').value;
       if(newPassword && newPassword.length < 6){ alert('New password must be at least 6 characters, or leave it blank to keep the current one.'); return; }
       try{
+        const before = DB.getAllUsers().find(u=>u.uid===editingMasterId);
         await DB.updateUser(editingMasterId, { name, phone, role, reportsTo, designation });
+        // Keep leads linked: a rename moves that person's leads to the new
+        // name, and "Link leads recorded as" pulls in leads stored under an
+        // older/different spelling.
+        const relinkName = document.getElementById('uf-relink')?.value || '';
+        const moved = await relinkNamesToUser([before && before.name !== name ? before.name : '', relinkName], { uid: editingMasterId, name });
+        if(moved) await logAudit('Relinked leads', 'User', name, moved + ' lead(s) moved to this user\'s name.');
         await logAudit('Updated', 'User', name, newPassword ? 'Profile updated; password also changed.' : 'Profile updated.');
         if(newPassword) await DB.changeUserPassword(editingMasterId, newPassword);
       }catch(err){
@@ -4003,7 +4064,7 @@ function renderLandownersView(){
       <td style="text-align:right;">${o.paidTillDate!=null&&o.paidTillDate!=='' ? fmtINR(paid) : '—'}</td>
       <td style="text-align:right;${total-paid>0?'color:var(--warn);font-weight:700;':''}">${o.totalPayment!=null&&o.totalPayment!=='' ? fmtINR(total-paid) : '—'}</td>
       <td>${o.active!==false ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-muted">Inactive</span>'}</td>
-      <td class="master-actions">
+      <td class="master-actions write-only">
         <button class="icon-btn icon-ok" data-lo-toggle="${o.id}" title="${o.active!==false?'Deactivate':'Activate'}">${o.active!==false?'✓':'○'}</button>
         <button class="icon-btn icon-edit" data-lo-edit="${o.id}" title="Edit">✎</button>
         ${canDeleteLandRegistry() ? `<button class="icon-btn icon-del" data-lo-delete="${o.id}" title="Delete permanently">🗑</button>` : ''}
@@ -4022,7 +4083,7 @@ function renderLandownersView(){
         ${rows}
       </table>
     </div>
-    <div class="card">
+    <div class="card write-only">
       <h2 class="section-title" style="margin-top:0;">${editing?'Edit Landowner':'Add Landowner'}</h2>
       <div class="form-grid">
         <div><label>Landowner ID</label><input type="text" id="lo-code" value="${codeVal}" disabled title="Generated automatically — not editable"></div>
@@ -4139,7 +4200,7 @@ function renderWorkflowView(){
   if(!workflowAddTo || !toOptions.includes(workflowAddTo)) workflowAddTo = toOptions[0];
   const rows = draft.map((w,i)=>`<tr>
       <td><button class="btn btn-sm btn-ghost" data-wf-remove="${i}" title="Delete">🗑</button></td>
-      <td><select id="wf-role-${i}">${ROLES.map(r=>`<option value="${r}" ${w.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
+      <td><select id="wf-role-${i}">${ROLES.filter(r=>r!=='management').map(r=>`<option value="${r}" ${w.role===r?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></td>
       <td>${stageLabel(w.from)}</td>
       <td>${stageLabel(w.to)}</td>
     </tr>`).join('');
@@ -4150,7 +4211,7 @@ function renderWorkflowView(){
       <table><tr><th></th><th>Application Role</th><th>From Status</th><th>To Status</th></tr>${rows || '<tr><td colspan="4" style="color:var(--muted);padding:14px;">No mappings configured — anyone with edit access can move a lead to any adjacent stage.</td></tr>'}</table>
     </div>
     <div class="card" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px;">
-      <div><label>Application Role</label><select id="wf-add-role">${ROLES.map(r=>`<option value="${r}" ${r===workflowAddRole?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
+      <div><label>Application Role</label><select id="wf-add-role">${ROLES.filter(r=>r!=='management').map(r=>`<option value="${r}" ${r===workflowAddRole?'selected':''}>${ROLE_LABELS[r]}</option>`).join('')}</select></div>
       <div><label>From Status</label><select id="wf-add-from">${fromOptions.map(f=>`<option value="${f}" ${f===workflowAddFrom?'selected':''}>${stageLabel(f)}</option>`).join('')}</select></div>
       <div><label>To Status</label><select id="wf-add-to">${toOptions.map(t=>`<option value="${t}" ${t===workflowAddTo?'selected':''}>${stageLabel(t)}</option>`).join('')}</select></div>
       <button class="btn btn-sm btn-teal" id="wf-add-btn">+ Add New</button>
@@ -5032,7 +5093,7 @@ function renderOverviewTab(l){
   const canEdit = canModifyLeadDetails(l);
   const followBlock = `
       <div><label>Follow Up Date</label>
-        <div class="field-pair"><input type="date" id="ov-nextcall" value="${l.nextCallDate||''}"><button class="btn btn-sm btn-teal" id="ov-save-call">Save</button></div>
+        <div class="field-pair"><input type="date" id="ov-nextcall" value="${l.nextCallDate||''}"><button class="btn btn-sm btn-teal write-only" id="ov-save-call">Save</button></div>
       </div>`;
 
   if(canEdit && leadEditMode){
@@ -5149,7 +5210,7 @@ function extraTransitionTargets(l, next, prev){
 // Audit Trail at the bottom of the page with who/when/remarks/documents.
 let changeStatusMode = false;
 function statusTargets(l){
-  if(l.stage==='closed') return [];
+  if(l.stage==='closed' || isReadOnlyUser()) return [];
   const idx = STAGE_INDEX[l.stage];
   const next = STAGES[idx+1];
   const prev = idx > 0 ? STAGES[idx-1] : null;
@@ -5216,7 +5277,7 @@ function renderStageTab(l){
       </div>
     </fieldset>` : '';
 
-  const holdBlock = l.stage==='closed' ? '' : `
+  const holdBlock = (l.stage==='closed' || isReadOnlyUser()) ? '' : `
     <fieldset>
       <legend>On Hold</legend>
       ${l.onHold && l.onHold.active ? `
@@ -5298,7 +5359,7 @@ function renderDocumentsSection(l){
     </div>`).join('') || '<div class="empty">No documents uploaded yet.</div>';
   return `
     ${listHtml}
-    <fieldset style="margin-top:10px;"><legend>Upload for current status — ${stageLabel(l.stage)}</legend>
+    <fieldset class="write-only" style="margin-top:10px;"><legend>Upload for current status — ${stageLabel(l.stage)}</legend>
       ${docUploadFieldsHtml('doc')}
       <button class="btn btn-sm btn-teal" id="doc-add" style="margin-top:8px;">Upload Document</button>
     </fieldset>`;
