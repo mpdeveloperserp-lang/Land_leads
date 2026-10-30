@@ -926,7 +926,7 @@ const DEFAULT_FIELD_CONFIG = [
   { field:'landIdentificationName', label:'Land Identification Name', visible:true, mandatory:true, filter:false },
   { field:'siteLocation',       label:'Site Location',          visible:true, mandatory:true,  filter:false },
   { field:'contactNumber',      label:'Contact Number',         visible:true, mandatory:false, filter:false },
-  { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:true,  filter:false },
+  { field:'leadSourceDateTime', label:'Lead Source Date/Time', visible:true, mandatory:false, filter:false },
   { field:'leadSource',         label:'Lead Source',            visible:true, mandatory:true,  filter:true  },
   { field:'channelPartnerCode', label:'Channel Partner',        visible:true, mandatory:false, filter:true  },
   { field:'assignedExecutive',  label:'Assigned Executive',     visible:true, mandatory:false, filter:true  },
@@ -953,11 +953,16 @@ const DEFAULT_FIELD_CONFIG = [
 // come from the code, so a rename like Next Call Date → Follow Up Date shows
 // up everywhere), so new fields appear on Configure and the New Lead form
 // automatically without anyone having to re-save anything first.
+// Date fields are never mandatory (Sara: "Remove mandatory for all the
+// dates") — whatever was saved on Configure, these always stay optional.
+const OPTIONAL_DATE_FIELDS = ['leadSourceDateTime','firstCallDate','siteVisitDate','nextCallDate'];
 function effectiveFieldConfig(){
   const saved = (DB && DB.getFieldConfig && DB.getFieldConfig()) || [];
   return DEFAULT_FIELD_CONFIG.map(def => {
     const s = saved.find(r=>r.field===def.field);
-    return s ? Object.assign({}, def, { visible: s.visible!==false, mandatory: !!s.mandatory, filter: !!s.filter }) : Object.assign({}, def);
+    const row = s ? Object.assign({}, def, { visible: s.visible!==false, mandatory: !!s.mandatory, filter: !!s.filter }) : Object.assign({}, def);
+    if(OPTIONAL_DATE_FIELDS.includes(row.field)) row.mandatory = false;
+    return row;
   });
 }
 // Maps each configurable field to the New Lead form input(s) it controls.
@@ -1770,14 +1775,33 @@ function canReassignLead(lead){
 // Who a lead can be handed to. An Executive: only people in their own team
 // scope (same people whose leads they can see). Manager/Head/Admin: any
 // active person in the org tree, company-wide.
+// Who a lead can be assigned to (New Lead + Modify). An Executive picks from
+// their own team: teammates under the same Manager, anyone below them, AND
+// that Manager. Managers/Heads pick from everyone in their part of the tree;
+// Admin from everyone. Managers/Heads are listed first, then Executives.
+function assignableUsers(){
+  if(!currentUser) return [];
+  const pool = treeUsers().filter(u => u.active!==false);
+  let list;
+  if(currentUser.role==='executive'){
+    const scope = teamScopeUids(currentUser);
+    if(currentUser.reportsTo) scope.add(currentUser.reportsTo);
+    list = pool.filter(u => scope.has(u.uid));
+  } else if(currentUser.role==='sysadmin'){
+    list = pool;
+  } else {
+    const vis = new Set(visibleExecutives().map(u=>u.uid));
+    vis.add(currentUser.uid);
+    list = pool.filter(u => vis.has(u.uid));
+  }
+  const rank = u => u.role==='executive' ? 1 : 0;
+  return list.sort((a,b)=> rank(a)-rank(b) || a.name.localeCompare(b.name));
+}
+function assigneeLabel(u){ return `${u.name} — ${u.designation || ROLE_LABELS[u.role] || u.role}${currentUser && u.uid===currentUser.uid ? ' (you)' : ''}`; }
 function eligibleReassignmentTargets(lead){
   const currentName = lead && lead.assignedExecutive;
-  const pool = treeUsers().filter(u => u.active!==false && u.name!==currentName);
-  if(currentUser && currentUser.role==='executive'){
-    const scope = teamScopeUids(currentUser);
-    return pool.filter(u => scope.has(u.uid));
-  }
-  return pool;
+  if(currentUser && currentUser.role==='executive') return assignableUsers().filter(u => u.name!==currentName);
+  return treeUsers().filter(u => u.active!==false && u.name!==currentName);
 }
 // Shared validation for DB.reassignLead() (both implementations).
 function validateReassignTarget(lead, newExecutiveName){
@@ -4722,7 +4746,7 @@ function renderConfigure(){
   const body = rows.map((r,i)=>`<tr>
       <td>${r.label}</td>
       <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="visible" ${r.visible?'checked':''}></td>
-      <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="mandatory" ${r.mandatory?'checked':''}></td>
+      <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="mandatory" ${r.mandatory?'checked':''} ${OPTIONAL_DATE_FIELDS.includes(r.field)?'disabled title="Date fields are always optional"':''}></td>
       <td style="text-align:center;"><input type="checkbox" data-cfg-idx="${i}" data-cfg-col="filter" ${r.filter?'checked':''}></td>
     </tr>`).join('');
 
@@ -4772,7 +4796,7 @@ function renderNewLeadView(){
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
         <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
         <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
-        <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${execs.map(e=>`<option value="${e.name}">${e.name}${e.designation?' — '+e.designation:''}</option>`).join('')}</select></div>
+        <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${assignableUsers().map(e=>`<option value="${e.name}" ${currentUser && e.uid===currentUser.uid ? 'selected' : ''}>${assigneeLabel(e)}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
         <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
         <div data-field="landClassification"><label>Land Classification Type</label><select id="nl-class"><option value="">— select —</option>${classes.map(c=>`<option value="${c.label}">${c.label}</option>`).join('')}</select></div>
@@ -4805,14 +4829,8 @@ function renderNewLeadView(){
 }
 
 function wireNewLeadViewEvents(){
-  // Executives can only ever create leads assigned to themselves.
-  if(currentUser && currentUser.role==='executive'){
-    const execSel = document.getElementById('nl-exec');
-    if(execSel){
-      execSel.innerHTML = `<option value="${currentUser.name}" selected>${currentUser.name} (you)</option>`;
-      execSel.disabled = true;
-    }
-  }
+  // Executives now choose from their own team (see assignableUsers()),
+  // defaulting to themselves.
 
   // Apply the Configure page's Visible/Mandatory settings to this form.
   const fcfg = fieldConfigMap();
@@ -4870,7 +4888,7 @@ function wireNewLeadViewEvents(){
     const lead = Object.assign({
       leadId: uid('LL-2026'),
       createdAt: new Date().toISOString(),
-      leadSourceDateTime: document.getElementById('nl-datetime').value,
+      leadSourceDateTime: document.getElementById('nl-datetime').value || new Date().toISOString().slice(0,16),
       leadSource: document.getElementById('nl-source').value,
       channelPartnerCode: document.getElementById('nl-cp').value.trim(),
       village, siteLocation: document.getElementById('nl-loc').value.trim(),
@@ -5224,7 +5242,7 @@ function renderOverviewTab(l){
 
         <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
         <div><label>Assigned Executive</label>${canAssign
-          ? `<select id="ov-e-exec"><option value="${l.assignedExecutive||''}" selected>${l.assignedExecutive||'— unassigned —'} (current)</option>${targets.map(u=>`<option value="${u.name}">${u.name}${u.designation?' — '+u.designation:''}</option>`).join('')}</select>`
+          ? `<select id="ov-e-exec"><option value="${l.assignedExecutive||''}" selected>${l.assignedExecutive||'— unassigned —'} (current)</option>${targets.map(u=>`<option value="${u.name}">${assigneeLabel(u)}</option>`).join('')}</select>`
           : `<input type="text" value="${l.assignedExecutive||'—'}" disabled title="You can't reassign this lead.">`}</div>
         <div><label>Reassign Remarks</label><input type="text" id="ov-e-exec-remarks" placeholder="Only used if the executive changes"></div>
         <div><label>Village Name</label><select id="ov-e-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}" ${v.name===l.village?'selected':''}>${v.name}</option>`).join('')}</select></div>
