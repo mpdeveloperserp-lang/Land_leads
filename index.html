@@ -935,7 +935,6 @@ const DEFAULT_FIELD_CONFIG = [
   { field:'googlePin',          label:'Location Pin & Map',     visible:true, mandatory:false, filter:false },
   { field:'landClassification', label:'Land Classification Type', visible:true, mandatory:false, filter:true },
   { field:'extent',             label:'Total Land Extent',      visible:true, mandatory:true,  filter:false },
-  { field:'price',              label:'Quoted Price',           visible:true, mandatory:true,  filter:false },
   { field:'roadWidth',          label:'Road Width (ft)',        visible:true, mandatory:false, filter:false },
   { field:'frontage',           label:'Frontage (ft)',          visible:true, mandatory:false, filter:false },
   { field:'landownerName',      label:'Landowner Name',         visible:true, mandatory:false, filter:false },
@@ -970,7 +969,7 @@ const FIELD_TO_INPUT = {
   leadSourceDateTime:['nl-datetime'], leadSource:['nl-source'], channelPartnerCode:['nl-cp'],
   assignedExecutive:['nl-exec'], village:['nl-village'], surveyNumber:['nl-survey'],
   siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
-  extent:['nl-extent-val'], price:['nl-price-val'],
+  extent:['nl-extent-val'],
   landownerName:['nl-owner-name'], landownerPhone:['nl-owner-phone'],
   mediatorName:['nl-med'], nextCallDate:['nl-nextcall'],
   contactNumber:['nl-contact'], landIdentificationName:['nl-landname'], roadWidth:['nl-road'], frontage:['nl-frontage'],
@@ -1119,27 +1118,27 @@ function seedLeads(){
   }, o);
 
   return [
-    mk({stage:'new', age:1, stageAge:1, village:'Oragadam', siteLocation:'Near NH48 service road', extentValue:2.5, extentUnit:'acre', priceValue:1.1, priceUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Karthik R', classPriceValue:1.05, classPriceUnit:'acre', contactNumber:'9840011111', googlePin:'12.8379, 79.9554'}),
-    mk({stage:'contacted', age:9, stageAge:8, village:'Guduvancheri', siteLocation:'Behind bus depot', extentValue:60, extentUnit:'cent', priceValue:38, priceUnit:'cent', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Divya S', nextCallDate: todayStr(),
+    mk({stage:'new', age:1, stageAge:1, village:'Oragadam', siteLocation:'Near NH48 service road', extentValue:2.5, extentUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Karthik R', classPriceValue:1.05, classPriceUnit:'acre', contactNumber:'9840011111', googlePin:'12.8379, 79.9554'}),
+    mk({stage:'contacted', age:9, stageAge:8, village:'Guduvancheri', siteLocation:'Behind bus depot', extentValue:60, extentUnit:'cent', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Divya S', nextCallDate: todayStr(),
       contactSubStatus:{ mediator:{contacted:true,date:daysAgo(6)}, landowner:{contacted:false,date:''} }}),
-    mk({stage:'site_visited', age:14, stageAge:4, village:'Thiruporur', siteLocation:'Off ECR link road', extentValue:1.8, extentUnit:'acre', priceValue:95, priceUnit:'ground', leadSource:'Field Survey', assignedExecutive:'Karthik R', landClassification:'Joint Venture', jvLandownerPct:40, jvRatio:'40:60', contactNumber:'9840055555', roadWidth:30, frontage:120, firstCallDate:daysAgo(13).slice(0,10), siteVisitDate:daysAgo(4).slice(0,10), geo:{lat:12.7466, lng:80.1956}}),
-    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', priceValue:0.9, priceUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10),
+    mk({stage:'site_visited', age:14, stageAge:4, village:'Thiruporur', siteLocation:'Off ECR link road', extentValue:1.8, extentUnit:'acre', leadSource:'Field Survey', assignedExecutive:'Karthik R', landClassification:'Joint Venture', jvLandownerPct:40, jvRatio:'40:60', contactNumber:'9840055555', roadWidth:30, frontage:120, firstCallDate:daysAgo(13).slice(0,10), siteVisitDate:daysAgo(4).slice(0,10), geo:{lat:12.7466, lng:80.1956}}),
+    mk({stage:'under_eval', age:30, stageAge:22, village:'Sriperumbudur', siteLocation:'SIPCOT approach road', extentValue:4, extentUnit:'acre', leadSource:'Direct / Walk-in', assignedExecutive:'Divya S', nextCallDate: daysAgo(-2).slice(0,10),
       feasibility:{ technical:{status:'In Progress',notes:'Awaiting soil test report'}, financial:{status:'Cleared',notes:'Within board-approved budget band'} },
       onHold:{active:true, reasonCode:'Awaiting documents', notes:'Owner arranging patta copy', since: daysAgo(5)}}),
-    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', priceValue:1.4, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R',
+    mk({stage:'doc_legal', age:40, stageAge:9, village:'Mahabalipuram', siteLocation:'ECR frontage', extentValue:1.2, extentUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-007', assignedExecutive:'Karthik R',
       documents:[{name:'FMB Drawing', url:'(pending upload)', addedAt:daysAgo(8)},{name:'Patta Copy', url:'(pending upload)', addedAt:daysAgo(6)}],
       legalVerificationLog:[{date:daysAgo(5), titleStatus:'Minor Issues', encumbranceStatus:'Issues Found', encumbrancePeriod:'2005–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Partial', legalRiskRating:'Medium', remarks:'Name mismatch between patta and EC — owner arranging correction.', verifiedBy:'Land Manager'}],
       // A Joint Venture example (her other real mode, alongside Outright) —
       // captured as an Advance to the landowner, not a purchase Price.
       acquisitionProposalLog:[{date:daysAgo(2), status:'Draft', advanceAmount:25, modeOfAcquisition:'Joint Venture', paymentSchedule:'40:60 built-up area share, advance adjusted against owner’s final share', remarks:'Owner prefers JV over outright sale.', proposedBy:'Karthik R'}]}),
-    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', priceValue:1.05, priceUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S',
+    mk({stage:'negotiation', age:55, stageAge:11, village:'Chengalpattu', siteLocation:'Near bypass junction', extentValue:3.2, extentUnit:'acre', leadSource:'Referral', assignedExecutive:'Divya S',
       approval:{approver:'Land Manager', date:daysAgo(10), remarks:'Approved to proceed to negotiation'},
       negotiationLog:[{date:daysAgo(9), offerBy:'Us', amount:100, notes:'Opening offer per acre (lakh)'},{date:daysAgo(4), offerBy:'Owner', amount:112, notes:'Counter'}],
       legalVerificationLog:[{date:daysAgo(12), titleStatus:'Clear', encumbranceStatus:'Clear', encumbrancePeriod:'2000–2026', litigationStatus:'None', litigationDetails:'', pattaChittaVerified:'Yes', legalRiskRating:'Low', remarks:'No encumbrance found; clear to proceed.', verifiedBy:'Land Manager'}],
       valuationLog:[{date:daysAgo(10), method:'Guideline Value', guidelineRate:85, marketRate:108, agreedRate:100, totalValuation:320, remarks:'Guideline well below prevailing market rate for this stretch.', valuedBy:'Land Manager'}],
       acquisitionProposalLog:[{date:daysAgo(3), status:'Draft', proposedPurchasePrice:320, modeOfAcquisition:'Outright', paymentSchedule:'20% advance on agreement, 80% on registration', remarks:'First draft, pending Owner’s response to our latest offer.', proposedBy:'Divya S'}]}),
-    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', priceValue:0.85, priceUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R',
-      outcome:'acquired', finalPrice:0.88, finalDate:daysAgo(3),
+    mk({stage:'closed', age:70, stageAge:0, village:'Padappai', siteLocation:'Grand Southern Trunk Rd', extentValue:2, extentUnit:'acre', leadSource:'Channel Partner', channelPartnerCode:'CP-014', assignedExecutive:'Karthik R',
+      outcome:'acquired', finalPrice:0.88, finalPriceUnit:'acre', finalDate:daysAgo(3),
       approval:{approver:'MD', date:daysAgo(4), remarks:'Approved'},
       acquisitionProposalLog:[
         {date:daysAgo(9), status:'Draft', proposedPurchasePrice:170, modeOfAcquisition:'Outright', paymentSchedule:'25% advance, 75% on registration', remarks:'Based on initial valuation.', proposedBy:'Karthik R'},
@@ -1156,7 +1155,7 @@ function seedLeads(){
       registrationLog:[
         {date:daysAgo(1), registrationNumber:'2847/2026', sroOffice:'SRO Sriperumbudur', documentType:'Sale Deed', stampDuty:12.3, registrationCharges:1.76, remarks:'Registered same day as final payment.', registeredBy:'Land Manager'},
       ]}),
-    mk({stage:'closed', age:48, stageAge:0, village:'Vandalur', siteLocation:'Near ATC road', extentValue:1.5, extentUnit:'acre', priceValue:1.3, priceUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Divya S',
+    mk({stage:'closed', age:48, stageAge:0, village:'Vandalur', siteLocation:'Near ATC road', extentValue:1.5, extentUnit:'acre', leadSource:'Website Enquiry', assignedExecutive:'Divya S',
       outcome:'dropped', reasonCode:'Title / legal issue', reasonNotes:'Pending partition suit found during EC check',
       legalVerificationLog:[{date:daysAgo(8), titleStatus:'Disputed', encumbranceStatus:'Issues Found', encumbrancePeriod:'1998–2026', litigationStatus:'Pending', litigationDetails:'Partition suit O.S. No. 214/2024 pending in Chengalpattu District Court', pattaChittaVerified:'No', legalRiskRating:'High', remarks:'Recommended to drop pending suit resolution.', verifiedBy:'Land Manager'}]}),
   ];
@@ -2499,14 +2498,12 @@ function fieldConfigMap(){
 
 // ---- Derived calculations ----------------------------------------------
 function leadExtentSqft(l){ return extentSqft(l.extentValue, l.extentUnit); }
-function leadPricePerSqft(l){ return pricePerSqft(l.priceValue, l.priceUnit); }
-function leadValue(l){ return leadExtentSqft(l) * leadPricePerSqft(l); }
 // Final Price (set when a lead is closed as Acquired — see renderTransitionBlock()'s
-// isClosing branch) is a per-unit rate in the SAME priceUnit as the lead's own
-// Quoted Price, never a total — same unit-conversion pattern as leadValue()
-// above, just reading finalPrice instead of priceValue, for MIS Analytics'
-// "Acquired Value" (the actual closing rate, not the original ask).
-function leadFinalValue(l){ return l.finalPrice==null ? null : leadExtentSqft(l) * pricePerSqft(l.finalPrice, l.priceUnit); }
+// isClosing branch) is a per-unit rate in its own finalPriceUnit (chosen on
+// the Closing form, independent of the removed Quoted Price field), never a
+// total — converted to a sqft rate the same way the old leadValue() did, for
+// MIS Analytics' "Acquired Value" (the actual closing rate, not an ask).
+function leadFinalValue(l){ return l.finalPrice==null ? null : leadExtentSqft(l) * pricePerSqft(l.finalPrice, l.finalPriceUnit || l.extentUnit); }
 // Lead Created By. Leads entered before this field existed fall back to
 // whoever the "Lead created" history entry names (older versions recorded
 // the assigned executive there, so treat those as best-effort).
@@ -2673,6 +2670,15 @@ function donutChart(segs, opts){
 // Shared data helpers for Dashboard + MIS Analytics
 function acres(l){ return sqftToUnit(leadExtentSqft(l),'acre'); }
 function cpName(code){ const c = DB.getAllMasters('channelPartners').find(x=>x.code===code); return c ? c.name : code; }
+// Name + mobile number for a Channel Partner, for read-only display on the
+// Lead Details page (Sara: show the name with their mobile no, not the bare
+// CP code). Falls back to the bare code if the record can't be found (e.g.
+// a legacy/deleted CP), same as cpName() above.
+function cpNameAndPhone(code){
+  const c = DB.getAllMasters('channelPartners').find(x=>x.code===code);
+  if(!c) return code;
+  return c.phone ? `${c.name} · ${c.phone}` : c.name;
+}
 function groupCount(leads, keyFn){ const m = {}; leads.forEach(l=>{ const k = keyFn(l); if(k==null||k==='') return; m[k]=(m[k]||0)+1; }); return Object.entries(m).sort((a,b)=>b[1]-a[1]); }
 function fyOf(d){ const dt = toDateSafe(d); if(!dt) return null; const y = dt.getMonth()>=3 ? dt.getFullYear() : dt.getFullYear()-1; return 'FY'+y+'-'+String((y+1)%100).padStart(2,'0'); }
 function last12Months(){ const out=[]; const d=new Date(); d.setDate(1); for(let i=11;i>=0;i--){ const x=new Date(d.getFullYear(), d.getMonth()-i, 1); out.push({ key: x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0'), label: x.toLocaleDateString('en-IN',{month:'short'})+' '+String(x.getFullYear()).slice(2) }); } return out; }
@@ -3158,16 +3164,13 @@ function stageAgingRows(){
 }
 // A single company/branch-wide financial rollup — kept as Metric/Value pairs
 // (rather than one-row-per-lead like the other sections) since these are
-// aggregate totals, not per-entity comparisons. Pipeline Value is the
-// QUOTED value of everything still open (leadValue()); Acquired Value uses
-// the actual closing rate (leadFinalValue()) rather than the original ask;
-// Collected/Outstanding are summed straight from every visible lead's own
-// paymentSummary() — never re-derived or stored separately, same
-// "read live from the existing per-lead logs" discipline as Project-wise
-// Summary on the Reports page.
+// aggregate totals, not per-entity comparisons. Acquired Value uses the
+// actual closing rate (leadFinalValue()); Collected/Outstanding are summed
+// straight from every visible lead's own paymentSummary() — never
+// re-derived or stored separately, same "read live from the existing
+// per-lead logs" discipline as Project-wise Summary on the Reports page.
 function financialSummaryRows(){
   const leads = visibleLeads();
-  const pipelineValue = leads.filter(isActive).reduce((s,l)=> s + leadValue(l), 0);
   const acquiredLeads = leads.filter(l=>l.outcome==='acquired');
   const acquiredValue = acquiredLeads.reduce((s,l)=> s + (leadFinalValue(l)||0), 0);
   // Landowner payments (Landowners page: Total Payment / Paid Till Date).
@@ -3176,7 +3179,6 @@ function financialSummaryRows(){
   const totalCollected = owners.reduce((s,o)=> s + (Number(o.paidTillDate)||0), 0);
   const totalOutstanding = Math.max(0, totalCommitted - totalCollected);
   return [
-    { Metric:'Pipeline Value (open leads, quoted)', Value: Number(pipelineValue.toFixed(2)) },
     { Metric:'Acquired Value (closing rate, '+acquiredLeads.length+' lead(s))', Value: Number(acquiredValue.toFixed(2)) },
     { Metric:'Landowner Payments — Total Payment', Value: Number(totalCommitted.toFixed(2)) },
     { Metric:'Landowner Payments — Paid Till Date', Value: Number(totalCollected.toFixed(2)) },
@@ -3230,7 +3232,6 @@ function renderAnalytics(){
       <div class="card stat"><div class="label">Total Leads</div><div class="value">${leads.length}</div><div class="sub">${leads.length-closedN} active · ${closedN} closed</div></div>
       <div class="card stat"><div class="label">Conversion</div><div class="value">${conv.toFixed(1)}%</div><div class="sub">${acquiredN} acquired</div></div>
       <div class="card stat"><div class="label">Avg Days to Close</div><div class="value">${avgClose==null?'—':avgClose}</div><div class="sub">acquired leads</div></div>
-      <div class="card stat"><div class="label">Pipeline Value</div><div class="value">${chFmt(finVal('Pipeline Value'))}</div><div class="sub">open leads, quoted</div></div>
       <div class="card stat"><div class="label">Landowner Paid</div><div class="value">${fmtINR(finVal('Landowner Payments — Paid'))}</div><div class="sub">of ${fmtINR(finVal('Landowner Payments — Total'))}</div></div>
       <div class="card stat"><div class="label">Landowner Balance</div><div class="value">${fmtINR(finVal('Landowner Payments — Balance'))}</div><div class="sub">still to pay</div></div>
     </div>
@@ -3358,7 +3359,6 @@ function renderList(){
       <td class="clickable-row" data-id="${l.id}">${l.landClassification||'—'}</td>
       <td class="clickable-row" data-id="${l.id}"><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
       <td class="clickable-row" data-id="${l.id}">${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label}</td>
-      <td class="clickable-row" data-id="${l.id}">${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label}</td>
       <td class="clickable-row" data-id="${l.id}">${l.landownerName||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${l.leadSource||'—'}</td>
       <td class="clickable-row" data-id="${l.id}">${leadCreatorName(l)}</td>
@@ -3366,7 +3366,7 @@ function renderList(){
       <td class="clickable-row" data-id="${l.id}">${followUp}</td>
       <td><button class="btn btn-sm btn-ghost" data-view-id="${l.id}">View</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="15" class="empty">No leads match these filters</td></tr>`;
+  }).join('') || `<tr><td colspan="14" class="empty">No leads match these filters</td></tr>`;
 
   return `
     <div class="page-header">
@@ -3420,7 +3420,7 @@ function renderList(){
 
     <div class="card" style="padding:0;overflow-x:auto;">
       <table class="leads-table">
-        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Land Name</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Quoted Price</th><th>Landowner</th><th>Source</th><th>Lead Owner</th><th>Assigned To</th><th>Follow-up</th><th></th></tr>
+        <tr><th><input type="checkbox" id="check-all"></th><th>Lead ID</th><th>Land Name</th><th>Village</th><th>Contact</th><th>Land Class Type</th><th>Status</th><th>Extent</th><th>Landowner</th><th>Source</th><th>Lead Owner</th><th>Assigned To</th><th>Follow-up</th><th></th></tr>
         ${rows}
       </table>
     </div>
@@ -3492,7 +3492,6 @@ function wireListEvents(){
     return source.map(l=>({
       'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', Village: l.village||'', 'Contact Number': l.contactNumber||'', 'Land Classification Type': l.landClassification||'', 'Survey No.': l.surveyNumber||'',
       Extent: l.extentValue, 'Extent Unit': EXTENT_UNITS[l.extentUnit]?.label||'',
-      Price: l.priceValue, 'Price Unit': EXTENT_UNITS[l.priceUnit]?.label||'',
       Landowner: l.landownerName||'', Source: l.leadSource||'', 'Lead Owner': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'', Status: stageLabel(l.stage)
     }));
   }, 'Land_Leads_List', 'Land Leads List');
@@ -3874,12 +3873,11 @@ function renderCPLeadsSection(cp){
   const rows = leads.map(l=>`<tr class="clickable-row" data-id="${l.id}">
       <td><b>${l.leadId}</b></td><td>${l.village||'—'}</td><td><span class="badge badge-navy">${stageLabel(l.stage)}</span></td>
       <td>${l.assignedExecutive||'—'}</td><td>${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label||''}</td>
-      <td>${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label||''}</td>
-    </tr>`).join('') || `<tr><td colspan="6" class="empty">No leads recorded against this Channel Partner yet.</td></tr>`;
+    </tr>`).join('') || `<tr><td colspan="5" class="empty">No leads recorded against this Channel Partner yet.</td></tr>`;
   return `
     <h2 class="section-title">Leads Sourced by ${cp.name||cp.code} <span class="tag">${leads.length} lead${leads.length===1?'':'s'}</span></h2>
     <div class="card" style="padding:0;overflow-x:auto;">
-      <table><tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Assigned Executive</th><th>Extent</th><th>Price</th></tr>${rows}</table>
+      <table><tr><th>Lead ID</th><th>Village</th><th>Stage</th><th>Assigned Executive</th><th>Extent</th></tr>${rows}</table>
     </div>`;
 }
 
@@ -4805,10 +4803,6 @@ function renderNewLeadView(){
           <label>Total Land Extent</label>
           <div class="field-pair"><input type="number" id="nl-extent-val" step="0.01"><select id="nl-extent-unit">${unitOpts()}</select></div>
         </div>
-        <div data-field="price">
-          <label>Quoted Price (per unit)</label>
-          <div class="field-pair"><input type="number" id="nl-price-val" step="0.01"><select id="nl-price-unit">${unitOpts()}</select></div>
-        </div>
         <div data-field="roadWidth"><label>Road Width (ft)</label><input type="number" id="nl-road" step="0.1"></div>
         <div data-field="frontage"><label>Frontage (ft)</label><input type="number" id="nl-frontage" step="0.1"></div>
         <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
@@ -4850,14 +4844,10 @@ function wireNewLeadViewEvents(){
   const recompute = () => {
     const ev = parseFloat(document.getElementById('nl-extent-val').value)||0;
     const eu = document.getElementById('nl-extent-unit').value;
-    const pv = parseFloat(document.getElementById('nl-price-val').value)||0;
-    const pu = document.getElementById('nl-price-unit').value;
     const sqft = extentSqft(ev,eu);
-    const pps = pricePerSqft(pv,pu);
-    document.getElementById('nl-computed').textContent =
-      `≈ ${fmtNum(sqft)} sqft · ≈ ${fmtNum(pps)} per sqft · est. total value ${fmtINR(sqft*pps)}`;
+    document.getElementById('nl-computed').textContent = `≈ ${fmtNum(sqft)} sqft`;
   };
-  ['nl-extent-val','nl-extent-unit','nl-price-val','nl-price-unit'].forEach(id=>{
+  ['nl-extent-val','nl-extent-unit'].forEach(id=>{
     document.getElementById(id).addEventListener('input', recompute);
     document.getElementById(id).addEventListener('change', recompute);
   });
@@ -4903,8 +4893,6 @@ function wireNewLeadViewEvents(){
       siteVisitDate: document.getElementById('nl-sitevisit').value,
       extentValue: parseFloat(document.getElementById('nl-extent-val').value)||0,
       extentUnit: document.getElementById('nl-extent-unit').value,
-      priceValue: parseFloat(document.getElementById('nl-price-val').value)||0,
-      priceUnit: document.getElementById('nl-price-unit').value,
       landownerName: document.getElementById('nl-owner-name').value.trim(),
       landownerPhone: document.getElementById('nl-owner-phone').value.trim(),
       landownerJointOwners: 1,
@@ -5009,7 +4997,7 @@ function renderLeadDetailPage(){
 const MODIFY_FIELD_INPUTS = {
   landIdentificationName:'ov-e-landname', siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
   channelPartnerCode:'ov-e-cp', village:'ov-e-village', surveyNumber:'ov-e-survey',
-  googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val', price:'ov-e-price-val',
+  googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val',
   roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner-name', landownerPhone:'ov-e-owner-phone',
   mediatorName:'ov-e-med', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
 };
@@ -5150,7 +5138,7 @@ function classFieldsHtml(prefix, l){
   return `
     <div data-cls-for="${prefix}" data-cls="price" class="cond-box">
       <label id="${prefix}-cls-price-label">Price</label>
-      <div class="field-pair"><input type="number" id="${prefix}-cls-price" step="0.01" value="${l.classPriceValue!=null?l.classPriceValue:''}" placeholder="Price"><select id="${prefix}-cls-price-unit">${unitOpts(l.classPriceUnit||l.priceUnit)}</select></div>
+      <div class="field-pair"><input type="number" id="${prefix}-cls-price" step="0.01" value="${l.classPriceValue!=null?l.classPriceValue:''}" placeholder="Price"><select id="${prefix}-cls-price-unit">${unitOpts(l.classPriceUnit)}</select></div>
     </div>
     <div data-cls-for="${prefix}" data-cls="jv" class="cond-box">
       <label>JV Ratio (Landowner : Developer)</label>
@@ -5206,7 +5194,7 @@ function classDetailText(l){
 }
 
 function renderOverviewTab(l){
-  const sqft = leadExtentSqft(l), pps = leadPricePerSqft(l);
+  const sqft = leadExtentSqft(l);
   const canEdit = canModifyLeadDetails(l);
   const followBlock = `
       <div><label>Follow Up Date</label>
@@ -5251,8 +5239,6 @@ function renderOverviewTab(l){
         ${classFieldsHtml('ov-e', l)}
         <div><label>Total Extent</label>
           <div class="field-pair"><input type="number" id="ov-e-extent-val" step="0.01" value="${l.extentValue!=null?l.extentValue:''}"><select id="ov-e-extent-unit">${unitOpts(l.extentUnit)}</select></div></div>
-        <div><label>Quoted Price</label>
-          <div class="field-pair"><input type="number" id="ov-e-price-val" step="0.01" value="${l.priceValue!=null?l.priceValue:''}"><select id="ov-e-price-unit">${unitOpts(l.priceUnit)}</select></div></div>
         <div><label>Road Width (ft)</label><input type="number" id="ov-e-road" step="0.1" value="${l.roadWidth!=null?l.roadWidth:''}"></div>
         <div><label>Frontage (ft)</label><input type="number" id="ov-e-frontage" step="0.1" value="${l.frontage!=null?l.frontage:''}"></div>
         <div><label>Landowner Name</label><input type="text" id="ov-e-owner-name" value="${l.landownerName||''}"></div>
@@ -5278,7 +5264,7 @@ function renderOverviewTab(l){
       <div><label>Contact Number</label><div>${l.contactNumber ? `<a href="tel:${l.contactNumber}">${l.contactNumber}</a>` : '—'}</div></div>
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
-      <div><label>Channel Partner</label><div>${l.channelPartnerCode||'—'}</div></div>
+      <div><label>Channel Partner</label><div>${l.channelPartnerCode ? cpNameAndPhone(l.channelPartnerCode) : '—'}</div></div>
       <div><label>Lead Owner (Created By)</label><div>${leadCreatorName(l)}</div></div>
       <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
@@ -5286,7 +5272,6 @@ function renderOverviewTab(l){
       <div><label>Land Classification Type</label><div>${l.landClassification||'—'}</div></div>
       ${cls ? `<div><label>${cls.label}</label><div>${cls.value}</div></div>` : ''}
       <div><label>Total Extent</label><div>${fmtNum(l.extentValue)} ${EXTENT_UNITS[l.extentUnit]?.label||''} <span style="color:var(--muted)">(≈ ${fmtNum(sqft)} sqft)</span></div></div>
-      <div><label>Quoted Price</label><div>${fmtNum(l.priceValue)} / ${EXTENT_UNITS[l.priceUnit]?.label||''} <span style="color:var(--muted)">(≈ ${fmtNum(pps)}/sqft)</span></div></div>
       <div><label>Road Width</label><div>${l.roadWidth!=null && l.roadWidth!=='' ? fmtNum(l.roadWidth)+' ft' : '—'}</div></div>
       <div><label>Frontage</label><div>${l.frontage!=null && l.frontage!=='' ? fmtNum(l.frontage)+' ft' : '—'}</div></div>
       <div><label>Landowner</label><div>${l.landownerName||'—'} ${l.landownerPhone?('· '+l.landownerPhone):''}</div></div>
@@ -5346,10 +5331,11 @@ function renderStageTab(l){
   const holdReasons = DB.getMasters('holdReasons');
   const dropReasons = DB.getMasters('dropReasons');
   const targets = statusTargets(l);
+  const unitOpts = sel => Object.entries(EXTENT_UNITS).map(([k,v])=>`<option value="${k}" ${k===(sel||'acre')?'selected':''}>${v.label}</option>`).join('');
 
   const outcome = l.stage==='closed'
     ? (l.outcome==='acquired'
-        ? `<span class="badge badge-ok">Acquired</span> <span style="font-size:12.5px;color:var(--muted);">on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.priceUnit]?.label||''}${l.approval&&l.approval.approver?' · approved by '+l.approval.approver:''}</span>`
+        ? `<span class="badge badge-ok">Acquired</span> <span style="font-size:12.5px;color:var(--muted);">on ${fmtDate(l.finalDate)} at ${fmtNum(l.finalPrice)} / ${EXTENT_UNITS[l.finalPriceUnit]?.label||''}${l.approval&&l.approval.approver?' · approved by '+l.approval.approver:''}</span>`
         : `<span class="badge badge-danger">Dropped</span> <span style="font-size:12.5px;color:var(--muted);">${l.reasonCode||''}${l.reasonNotes?': '+l.reasonNotes:''}</span>`)
     : '';
 
@@ -5374,7 +5360,7 @@ function renderStageTab(l){
         </div>
         <div id="cs-closing" class="full" style="display:none;">
           <div class="form-grid">
-            <div><label>Final Price (per ${EXTENT_UNITS[l.priceUnit]?.label||'unit'})${REQ}</label><input type="number" id="cs-final-price" step="0.01" value="${l.priceValue||''}"></div>
+            <div><label>Final Price${REQ}</label><div class="field-pair"><input type="number" id="cs-final-price" step="0.01" value="${l.finalPrice||''}"><select id="cs-final-price-unit">${unitOpts(l.finalPriceUnit||l.extentUnit)}</select></div></div>
             <div><label>Final Date</label><input type="date" id="cs-final-date" value="${todayStr()}"></div>
           </div>
         </div>
@@ -5539,8 +5525,6 @@ function wireDetailTabEvents(l){
         landClassification: (val('ov-e-class')||'').trim(),
         extentValue: parseFloat(val('ov-e-extent-val')) || 0,
         extentUnit: val('ov-e-extent-unit') || l.extentUnit,
-        priceValue: parseFloat(val('ov-e-price-val')) || 0,
-        priceUnit: val('ov-e-price-unit') || l.priceUnit,
         roadWidth: numOrNull('ov-e-road'),
         frontage: numOrNull('ov-e-frontage'),
         landownerName: (val('ov-e-owner-name')||'').trim(),
@@ -5601,7 +5585,8 @@ function wireDetailTabEvents(l){
         note = 'Dropped — ' + reason;
       } else if(key==='closed'){
         Object.assign(patch, { outcome:'acquired',
-          finalPrice: parseFloat(document.getElementById('cs-final-price').value) || l.priceValue || null,
+          finalPrice: parseFloat(document.getElementById('cs-final-price').value) || null,
+          finalPriceUnit: document.getElementById('cs-final-price-unit').value || l.extentUnit || null,
           finalDate: document.getElementById('cs-final-date').value || todayStr() });
         note = 'Closed as Acquired';
       } else {
