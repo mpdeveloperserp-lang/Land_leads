@@ -2354,7 +2354,7 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, milestone:'', letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
@@ -2551,6 +2551,7 @@ function leadMatchesFilters(l, f){
   if(f.dateTo){ const d = (l.leadSourceDateTime||'').slice(0,10); if(!d || d > f.dateTo) return false; }
   if(f.onHold && !(l.onHold && l.onHold.active)) return false;
   if(f.callDueOrOverdue && !(l.nextCallDate && new Date(l.nextCallDate) <= new Date(todayStr()))) return false;
+  if(f.milestone && !(l.milestoneDates && l.milestoneDates[f.milestone])) return false;
   if(f.letter){ const v=(l.village||'').trim().toUpperCase(); if(!v.startsWith(f.letter)) return false; }
   if(f.q){
     const q = f.q.toLowerCase();
@@ -2816,6 +2817,15 @@ function renderDashboard(){
   const acquired = leads.filter(l=>l.outcome==='acquired').length, dropped = leads.filter(l=>l.outcome==='dropped').length;
   const activeAcres = active.reduce((s,l)=>s+acres(l),0);
 
+  // Progress Dates summary — how many leads have reached each of the 10
+  // milestones on the Lead Details page's "Progress Dates" checklist (see
+  // renderProgressDatesSection()). Click a row to see those leads on All
+  // Leads (same drill-through pattern as everything else on this page).
+  const milestoneRows = PROGRESS_DATE_FIELDS.map(f=>{
+    const count = leads.filter(l=>l.milestoneDates && l.milestoneDates[f.key]).length;
+    return `<tr class="clickable-row" data-milestone="${f.key}"><td>${f.label}</td><td>${count}</td></tr>`;
+  }).join('');
+
   return `
     <div class="page-header"><h1>Dashboard</h1></div>
 
@@ -2858,6 +2868,13 @@ function renderDashboard(){
     <div class="chart-grid" style="margin-top:16px;">
       <div class="card"><div class="chart-title">New Leads</div>${newLeadsList}</div>
       <div class="card"><div class="chart-title">Yet to be Site Visited</div>${yetToSiteVisitList}</div>
+    </div>
+
+    <div class="dash-h1">Progress</div>
+    <div class="dash-h2">Milestone Dates</div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">How many leads have reached each milestone so far (Progress Dates, set on a lead's own page). Click a row to see those leads.</p>
+    <div class="card" style="padding:0;overflow-x:auto;">
+      <table><tr><th>Milestone</th><th>Leads Reached</th></tr>${milestoneRows}</table>
     </div>
   `;
 }
@@ -5692,6 +5709,7 @@ function wireViewEvents(){
     document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
     document.querySelectorAll('[data-cp]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ channelPartner: el.dataset.cp })));
     document.querySelectorAll('[data-creator]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ createdBy: el.dataset.creator })));
+    document.querySelectorAll('[data-milestone]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ milestone: el.dataset.milestone })));
     document.querySelectorAll('[data-open-id]').forEach(el=>el.addEventListener('click', ()=>openLeadDetail(el.dataset.openId)));
   }
 
