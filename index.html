@@ -1112,6 +1112,7 @@ function seedLeads(){
     documents:[], negotiationLog:[], legalVerificationLog:[], valuationLog:[], acquisitionProposalLog:[], approval:{approver:'',date:'',remarks:''},
     paymentLog:[], registrationLog:[],
     finalPrice:null, finalDate:'', outcome:'',
+    milestoneDates:{},
     stageHistory:[{stage:o.stage, at:daysAgo(o.stageAge!=null?o.stageAge:o.age||0), by:o.assignedExecutive||'Karthik R', note:'Lead created'}],
     reassignmentHistory:[],
     createdByName: o.createdByName || 'Land Manager',
@@ -4905,6 +4906,7 @@ function wireNewLeadViewEvents(){
       contactSubStatus:{ mediator:{contacted:false,date:''}, landowner:{contacted:false,date:''} },
       documents:[], approval:{approver:'',date:'',remarks:''},
       finalPrice:null, finalDate:'', outcome:'',
+      milestoneDates:{},
       // Lead Created By — who actually entered the lead (Sara: "dashboard will
       // show the name of the person who created and not whom it's assigned
       // to, which is lead owner"). Stamped once here, never edited.
@@ -5327,6 +5329,39 @@ function statusTargets(l){
   list.push({ key:'__drop', label:'Dropped (close this lead)', dir:'Dropped', gated:false, allowed:true });
   return list;
 }
+// ---- Progress Dates (Status & Actions, below the Status row) --------------
+// A free-standing checklist of milestone dates Sara asked for, separate from
+// the Change Status workflow above it: each one is just "when did this
+// happen" and is set manually, in any order, by whoever's working the lead
+// — it doesn't gate or get driven by the Status/Workflow Config pipeline.
+// Stored as a single milestoneDates object on the lead (one key per row
+// below) so a status change elsewhere on this page never touches it.
+const PROGRESS_DATE_FIELDS = [
+  { key:'contacted',                label:'Contacted' },
+  { key:'siteVisitDone',            label:'Site Visit Done' },
+  { key:'ownerMeetingDone',         label:'Owner Meeting Done' },
+  { key:'technicalOpinionLegal',    label:'Technical Opinion – Liaison & Legal' },
+  { key:'negotiationStarted',       label:'Negotiation Started' },
+  { key:'negotiationEnded',         label:'Negotiation Ended' },
+  { key:'legalDueDiligenceStarted', label:'Legal Due Diligence Started' },
+  { key:'legalDueDiligenceEnded',   label:'Legal Due Diligence Ended' },
+  { key:'purchased',                label:'Purchased' },
+  { key:'dropped',                  label:'Dropped' },
+];
+function renderProgressDatesSection(l){
+  const md = l.milestoneDates || {};
+  const rows = PROGRESS_DATE_FIELDS.map(f=>`
+    <div><label>${f.label}</label><input type="date" id="pd-${f.key}" value="${md[f.key]||''}"></div>`).join('');
+  return `
+    <fieldset style="margin-top:10px;">
+      <legend>Progress Dates</legend>
+      <div class="form-grid">${rows}</div>
+      <div style="margin-top:10px;">
+        <button class="btn btn-sm btn-teal write-only" id="pd-save">Save Dates</button>
+      </div>
+    </fieldset>`;
+}
+
 function renderStageTab(l){
   const holdReasons = DB.getMasters('holdReasons');
   const dropReasons = DB.getMasters('dropReasons');
@@ -5348,6 +5383,8 @@ function renderStageTab(l){
         ${targets.length && !changeStatusMode ? `<a href="#" id="cs-open" style="color:var(--teal);font-weight:700;font-size:13px;">Change Status</a>` : ''}
       </div>
     </div>`;
+
+  const progressDates = renderProgressDatesSection(l);
 
   const changeForm = (targets.length && changeStatusMode) ? `
     <fieldset><legend>Change Status</legend>
@@ -5394,7 +5431,7 @@ function renderStageTab(l){
         <button class="btn btn-sm btn-ghost" id="hold-btn" style="margin-top:8px;">Put On Hold</button>
       `}
     </fieldset>`;
-  return `${statusRow}${changeForm}${holdBlock}`;
+  return `${statusRow}${progressDates}${changeForm}${holdBlock}`;
 }
 
 // ---- Documents (by status) -------------------------------------------------
@@ -5490,6 +5527,18 @@ function renderHistoryTab(l){
 }
 
 function wireDetailTabEvents(l){
+  {
+    const btn = document.getElementById('pd-save');
+    if(btn) btn.onclick = async () => {
+      const milestoneDates = Object.assign({}, l.milestoneDates||{});
+      PROGRESS_DATE_FIELDS.forEach(f=>{
+        const el = document.getElementById('pd-'+f.key);
+        if(el) milestoneDates[f.key] = el.value || '';
+      });
+      await DB.updateLead(l.id, { milestoneDates });
+      render();
+    };
+  }
   {
     const btn = document.getElementById('ov-save-call');
     if(btn) btn.onclick = async () => {
