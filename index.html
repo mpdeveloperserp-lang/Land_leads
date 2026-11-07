@@ -2409,6 +2409,7 @@ let auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' };
 let suppressHistoryPush = false;
 
 function render(){
+  if(currentUser) backfillMilestoneDatesOnce();
   if(!canAccessView(currentView)) currentView = 'dashboard';
   // Lead Details has no nav button of its own (it's a drill-through, not a
   // page in the sidebar). The top bar's #page-title already correctly reads
@@ -5365,6 +5366,71 @@ const PROGRESS_DATE_FIELDS = [
   { key:'purchased',                label:'Purchased' },
   { key:'dropped',                  label:'Dropped' },
 ];
+// Backfill for existing leads: several of these milestones already have a
+// real date sitting in the Audit Trail (the lead's own stageHistory — the
+// Status/By/Date/Remarks log) from before this checklist existed. Sara:
+// "already dated are there for contacted, site visited etc — please check
+// and retrieve." Only the milestones with a genuine matching data point are
+// pulled in; Owner Meeting Done and the two separate Legal Due Diligence
+// dates have no corresponding stage in the pipeline, so those still need
+// manual entry.
+function firstStageDate(l, stageKey){
+  const h = (l.stageHistory||[]).find(x=>x.stage===stageKey);
+  return h && h.at ? String(h.at).slice(0,10) : '';
+}
+function inferredMilestoneDates(l){
+  const out = {};
+  const contacted = firstStageDate(l,'contacted');
+  if(contacted) out.contacted = contacted;
+  const siteVisited = firstStageDate(l,'site_visited') || (l.siteVisitDate ? String(l.siteVisitDate).slice(0,10) : '');
+  if(siteVisited) out.siteVisitDone = siteVisited;
+  const docLegal = firstStageDate(l,'doc_legal');
+  if(docLegal) out.technicalOpinionLegal = docLegal;
+  const hist = (l.stageHistory||[]).slice().sort((a,b)=> new Date(a.at||0) - new Date(b.at||0));
+  const negIdx = hist.findIndex(x=>x.stage==='negotiation');
+  if(negIdx > -1){
+    out.negotiationStarted = String(hist[negIdx].at||'').slice(0,10);
+    if(negIdx < hist.length-1) out.negotiationEnded = String(hist[negIdx+1].at||'').slice(0,10);
+  }
+  if(l.outcome==='acquired'){
+    out.purchased = l.finalDate ? String(l.finalDate).slice(0,10) : firstStageDate(l,'closed');
+  }
+  if(l.outcome==='dropped'){
+    const d = firstStageDate(l,'closed');
+    if(d) out.dropped = d;
+  }
+  return out;
+}
+// Runs once per session, as soon as leads are loaded: fills in ONLY the
+// milestone keys a lead doesn't already have a value for, from
+// inferredMilestoneDates() above, and saves them. Never overwrites a date
+// someone already set (manually, or from an earlier run of this). Skipped
+// entirely for read-only (Management) users, who can't write leads anyway.
+let milestoneBackfillDone = false;
+async function backfillMilestoneDatesOnce(){
+  if(milestoneBackfillDone) return;
+  if(!DB || typeof DB.getLeads !== 'function') return;
+  const leads = DB.getLeads();
+  if(!leads || !leads.length) return;
+  milestoneBackfillDone = true;
+  if(!currentUser || isReadOnlyUser()) return;
+  let patchedAny = false;
+  for(const l of leads){
+    const inferred = inferredMilestoneDates(l);
+    const current = l.milestoneDates || {};
+    const patch = {};
+    Object.keys(inferred).forEach(k=>{ if(!current[k] && inferred[k]) patch[k] = inferred[k]; });
+    if(Object.keys(patch).length){
+      try{ await DB.updateLead(l.id, { milestoneDates: Object.assign({}, current, patch) }); patchedAny = true; }
+      catch(err){ console.warn('Could not backfill Progress Dates for lead', l.id, err); }
+    }
+  }
+  // MemoryDB (demo mode) has no change listener of its own to pick this up —
+  // Firestore's onSnapshot already re-renders on its own once each write
+  // lands, so this is a harmless extra re-render there, but it's the only
+  // way the just-backfilled dates show up immediately in demo mode.
+  if(patchedAny && !DB.isLive()) render();
+}
 function renderProgressDatesSection(l){
   const md = l.milestoneDates || {};
   const rows = PROGRESS_DATE_FIELDS.map(f=>`
