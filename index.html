@@ -520,11 +520,15 @@ function channelPartnerFromSelect(selId){
 // just the one matching the selected Lead Source (hide the other two)
 // instead of all three fields all the time. Matched by exact label text
 // against whatever's currently in the (admin-editable) Lead Sources master.
+// Any OTHER source (Referral, Cold Call, Website Enquiry, Field Survey,
+// Direct/Walk-in, Other, …) has no master to pick from, so it instead shows
+// a free-typed "Contact Person Name" field (Sara: "apart from the 3 sources
+// all other source show the name of the contact person").
 function sourceFieldGroup(sourceLabel){
   if(sourceLabel==='Channel Partner') return 'cp';
   if(sourceLabel==='Broker') return 'mediator';
   if(sourceLabel==='Land Owner') return 'landowner';
-  return null;
+  return 'other';
 }
 // A field counts as "visible" for mandatory-enforcement purposes only when
 // its data-field wrapper isn't display:none — whether that's Configure's own
@@ -543,15 +547,15 @@ function fieldIsVisible(el){
 // regardless of Lead Source (New Lead respects Configure's Visible flag;
 // Modify never has, so it's omitted there — unchanged existing behavior).
 function wireSourceDependentFields(prefix, fcfgVisible){
+  const GROUP_KEYS = { channelPartnerCode:'cp', mediatorName:'mediator', landownerName:'landowner', contactPersonName:'other' };
   const applyVisibility = () => {
     const sourceSel = document.getElementById(prefix+'-source');
     const group = sourceSel ? sourceFieldGroup(sourceSel.value) : null;
-    ['channelPartnerCode','mediatorName','landownerName'].forEach(key=>{
+    Object.keys(GROUP_KEYS).forEach(key=>{
       const wrap = document.querySelector(`[data-field="${key}"]`);
       if(!wrap) return;
       const configVisible = fcfgVisible ? fcfgVisible(key) : true;
-      const groupKey = key==='channelPartnerCode' ? 'cp' : key==='mediatorName' ? 'mediator' : 'landowner';
-      const belongs = group === groupKey;
+      const belongs = group === GROUP_KEYS[key];
       wrap.style.display = (configVisible && belongs) ? '' : 'none';
     });
   };
@@ -559,7 +563,7 @@ function wireSourceDependentFields(prefix, fcfgVisible){
   const sourceSel = document.getElementById(prefix+'-source');
   if(sourceSel) sourceSel.addEventListener('change', () => {
     const group = sourceFieldGroup(sourceSel.value);
-    const groupFieldIds = { cp: prefix+'-cp', mediator: prefix+'-med', landowner: prefix+'-owner' };
+    const groupFieldIds = { cp: prefix+'-cp', mediator: prefix+'-med', landowner: prefix+'-owner', other: prefix+'-contactperson' };
     Object.entries(groupFieldIds).forEach(([g,id])=>{
       if(g===group) return;
       const el = document.getElementById(id);
@@ -1060,6 +1064,12 @@ const DEFAULT_FIELD_CONFIG = [
   // (see landownerFromSelect()), not typed in separately.
   { field:'landownerName',      label:'Landowner',              visible:true, mandatory:false, filter:false },
   { field:'mediatorName',       label:'Mediator / Broker',      visible:true, mandatory:false, filter:true },
+  // Shows only for sources other than Channel Partner/Broker/Land Owner —
+  // those three already capture a name (from their own master); every other
+  // source has no master to pull a name from, so this is free-typed instead
+  // (Sara: "apart from the 3 sources all other source show the name of the
+  // contact person").
+  { field:'contactPersonName',  label:'Contact Person Name',    visible:true, mandatory:false, filter:false },
   { field:'firstCallDate',      label:'First Call Made',        visible:true, mandatory:false, filter:false },
   { field:'siteVisitDate',      label:'Site Visit Date',        visible:true, mandatory:false, filter:false },
   // Was "Next Call Date" — same field, renamed: it IS the follow-up date
@@ -1091,7 +1101,7 @@ const FIELD_TO_INPUT = {
   siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
   extent:['nl-extent-val'],
   landownerName:['nl-owner'],
-  mediatorName:['nl-med'], nextCallDate:['nl-nextcall'],
+  mediatorName:['nl-med'], contactPersonName:['nl-contactperson'], nextCallDate:['nl-nextcall'],
   contactNumber:['nl-contact'], landIdentificationName:['nl-landname'], roadWidth:['nl-road'], frontage:['nl-frontage'],
   firstCallDate:['nl-firstcall'], siteVisitDate:['nl-sitevisit'],
 };
@@ -3268,7 +3278,7 @@ function leadsReportRows(){
   return reportLeads().map(l=>({
     'Lead ID': l.leadId, 'Land Identification Name': l.landIdentificationName||'', 'Site Location': l.siteLocation||'', Village: l.village||'', 'Contact Number': l.contactNumber||'',
     Stage: stageLabel(l.stage), Source: l.leadSource||'',
-    'Channel Partner': l.channelPartnerCode||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
+    'Channel Partner': l.channelPartnerCode||'', 'Contact Person Name': l.contactPersonName||'', 'Lead Owner (Created By)': leadCreatorName(l), 'Assigned Executive': l.assignedExecutive||'',
     'Land Classification Type': l.landClassification||'',
     'Price (Outright/Staggered)': l.classPriceValue!=null ? (l.classPriceValue + ' / ' + (EXTENT_UNITS[l.classPriceUnit]?.label||'')) : '',
     'JV Ratio': l.jvRatio||'', 'Instalment Schedule': l.instalmentSchedule||'',
@@ -5116,6 +5126,7 @@ function renderNewLeadView(){
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
           <select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
+        <div data-field="contactPersonName"><label>Contact Person Name</label><input type="text" id="nl-contactperson" placeholder="Name of the person to contact"></div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${assignableUsers().map(e=>`<option value="${e.name}" ${currentUser && e.uid===currentUser.uid ? 'selected' : ''}>${assigneeLabel(e)}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
         <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
@@ -5209,6 +5220,7 @@ function wireNewLeadViewEvents(){
       leadSourceDateTime: document.getElementById('nl-datetime').value || new Date().toISOString().slice(0,16),
       leadSource: document.getElementById('nl-source').value,
       channelPartnerCode: document.getElementById('nl-cp').value.trim(),
+      contactPersonName: document.getElementById('nl-contactperson').value.trim(),
       village, siteLocation: document.getElementById('nl-loc').value.trim(),
       surveyNumber: document.getElementById('nl-survey').value.trim(),
       googlePin: document.getElementById('nl-pin').value.trim(),
@@ -5326,7 +5338,7 @@ const MODIFY_FIELD_INPUTS = {
   channelPartnerCode:'ov-e-cp', village:'ov-e-village', surveyNumber:'ov-e-survey',
   googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val',
   roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner',
-  mediatorName:'ov-e-med', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
+  mediatorName:'ov-e-med', contactPersonName:'ov-e-contactperson', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
 };
 function labelForInput(el){
   let n = el && el.parentElement;
@@ -5557,6 +5569,7 @@ function renderOverviewTab(l){
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
           <select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
+        <div data-field="contactPersonName"><label>Contact Person Name</label><input type="text" id="ov-e-contactperson" value="${(l.contactPersonName||'').replace(/"/g,'&quot;')}"></div>
 
         <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
         <div><label>Assigned Executive</label>${canAssign
@@ -5598,6 +5611,7 @@ function renderOverviewTab(l){
       <div><label>Lead Source</label><div>${l.leadSource||'—'}</div></div>
       <div><label>Lead Source Date</label><div>${fmtDate(l.leadSourceDateTime)}</div></div>
       <div><label>Channel Partner</label><div>${l.channelPartnerCode ? cpNameAndPhone(l.channelPartnerCode) : '—'}</div></div>
+      <div><label>Contact Person Name</label><div>${l.contactPersonName||'—'}</div></div>
       <div><label>Lead Owner (Created By)</label><div>${leadCreatorName(l)}</div></div>
       <div><label>Assigned Executive</label><div>${l.assignedExecutive||'—'}</div></div>
       <div><label>Village</label><div>${l.village||'—'}</div></div>
@@ -5960,6 +5974,7 @@ function wireDetailTabEvents(l){
         leadSource: (val('ov-e-source')||'').trim(),
         leadSourceDateTime: val('ov-e-datetime') || l.leadSourceDateTime || '',
         channelPartnerCode: (val('ov-e-cp')||'').trim(),
+        contactPersonName: (val('ov-e-contactperson')||'').trim(),
         village: (val('ov-e-village')||'').trim(),
         siteLocation: (val('ov-e-loc')||'').trim(),
         contactNumber: (val('ov-e-contact')||'').trim(),
