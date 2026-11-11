@@ -5126,6 +5126,12 @@ function renderNewLeadView(){
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
           <select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
+        <div data-field="landownerName"><label>Landowner</label>
+          <select id="nl-owner">${landownerOptionsHtml('')}</select>
+        </div>
+        <div data-field="mediatorName"><label>Mediator / Broker</label>
+          <select id="nl-med">${mediatorOptionsHtml('')}</select>
+        </div>
         <div data-field="contactPersonName"><label>Contact Person Name</label><input type="text" id="nl-contactperson" placeholder="Name of the person to contact"></div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${assignableUsers().map(e=>`<option value="${e.name}" ${currentUser && e.uid===currentUser.uid ? 'selected' : ''}>${assigneeLabel(e)}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
@@ -5138,12 +5144,6 @@ function renderNewLeadView(){
         </div>
         <div data-field="roadWidth"><label>Road Width (ft)</label><input type="number" id="nl-road" step="0.1"></div>
         <div data-field="frontage"><label>Frontage (ft)</label><input type="number" id="nl-frontage" step="0.1"></div>
-        <div data-field="landownerName"><label>Landowner</label>
-          <select id="nl-owner">${landownerOptionsHtml('')}</select>
-        </div>
-        <div data-field="mediatorName"><label>Mediator / Broker</label>
-          <select id="nl-med">${mediatorOptionsHtml('')}</select>
-        </div>
         <div data-field="firstCallDate"><label>First Call Made</label><input type="date" id="nl-firstcall"></div>
         <div data-field="siteVisitDate"><label>Site Visit Date</label><input type="date" id="nl-sitevisit"></div>
         <div data-field="nextCallDate"><label>Follow Up Date</label><input type="date" id="nl-nextcall"></div>
@@ -5569,6 +5569,12 @@ function renderOverviewTab(l){
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
           <select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
+        <div data-field="landownerName"><label>Landowner</label>
+          <select id="ov-e-owner">${landownerOptionsHtml(l.landownerName)}</select>
+        </div>
+        <div data-field="mediatorName"><label>Mediator / Broker</label>
+          <select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select>
+        </div>
         <div data-field="contactPersonName"><label>Contact Person Name</label><input type="text" id="ov-e-contactperson" value="${(l.contactPersonName||'').replace(/"/g,'&quot;')}"></div>
 
         <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
@@ -5584,12 +5590,6 @@ function renderOverviewTab(l){
           <div class="field-pair"><input type="number" id="ov-e-extent-val" step="0.01" value="${l.extentValue!=null?l.extentValue:''}"><select id="ov-e-extent-unit">${unitOpts(l.extentUnit)}</select></div></div>
         <div><label>Road Width (ft)</label><input type="number" id="ov-e-road" step="0.1" value="${l.roadWidth!=null?l.roadWidth:''}"></div>
         <div><label>Frontage (ft)</label><input type="number" id="ov-e-frontage" step="0.1" value="${l.frontage!=null?l.frontage:''}"></div>
-        <div data-field="landownerName"><label>Landowner</label>
-          <select id="ov-e-owner">${landownerOptionsHtml(l.landownerName)}</select>
-        </div>
-        <div data-field="mediatorName"><label>Mediator / Broker</label>
-          <select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select>
-        </div>
         <div><label>First Call Made</label><input type="date" id="ov-e-firstcall" value="${l.firstCallDate||''}"></div>
         <div><label>Site Visit Date</label><input type="date" id="ov-e-sitevisit" value="${l.siteVisitDate||''}"></div>
         <div><label>Follow Up Date</label><input type="date" id="ov-e-nextcall" value="${l.nextCallDate||''}"></div>
