@@ -2487,7 +2487,7 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', landowner:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, milestone:'', letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', landowner:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, milestone:'', milestoneMonth:'', createdMonth:'', letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
@@ -2860,6 +2860,8 @@ function leadMatchesFilters(l, f){
   if(f.onHold && !(l.onHold && l.onHold.active)) return false;
   if(f.callDueOrOverdue && !(l.nextCallDate && new Date(l.nextCallDate) <= new Date(todayStr()))) return false;
   if(f.milestone && !(l.milestoneDates && l.milestoneDates[f.milestone])) return false;
+  if(f.milestone && f.milestoneMonth){ const d = (l.milestoneDates && l.milestoneDates[f.milestone]) || ''; if(d.slice(0,7) !== f.milestoneMonth) return false; }
+  if(f.createdMonth && String(l.createdAt||'').slice(0,7) !== f.createdMonth) return false;
   if(f.letter){ const v=(l.village||'').trim().toUpperCase(); if(!v.startsWith(f.letter)) return false; }
   if(f.q){
     const q = f.q.toLowerCase();
@@ -2992,6 +2994,38 @@ function cpNameAndPhone(code){
 function groupCount(leads, keyFn){ const m = {}; leads.forEach(l=>{ const k = keyFn(l); if(k==null||k==='') return; m[k]=(m[k]||0)+1; }); return Object.entries(m).sort((a,b)=>b[1]-a[1]); }
 function fyOf(d){ const dt = toDateSafe(d); if(!dt) return null; const y = dt.getMonth()>=3 ? dt.getFullYear() : dt.getFullYear()-1; return 'FY'+y+'-'+String((y+1)%100).padStart(2,'0'); }
 function last12Months(){ const out=[]; const d=new Date(); d.setDate(1); for(let i=11;i>=0;i--){ const x=new Date(d.getFullYear(), d.getMonth()-i, 1); out.push({ key: x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0'), label: x.toLocaleDateString('en-IN',{month:'short'})+' '+String(x.getFullYear()).slice(2) }); } return out; }
+// ---- Financial Year (Apr–Mar) month-wise breakdown, Dashboard -------------
+// Sara: "FY wise and month wise date for all data... we need to see month
+// wise how many leads acquired and how many site visited and other things."
+// Reuses the same Apr–Mar financial year fyOf() already uses for Analytics,
+// but broken down to individual months instead of just a yearly total.
+function fyStartYearOf(d){ const dt = toDateSafe(d); if(!dt) return null; return dt.getMonth()>=3 ? dt.getFullYear() : dt.getFullYear()-1; }
+function fyLabel(startYear){ return 'FY '+startYear+'-'+String((startYear+1)%100).padStart(2,'0'); }
+// The 12 {key:'YYYY-MM', label:'Mon'} months of a given FY, Apr first —
+// same key format last12Months()/inflow already match leads' dates against.
+function fyMonthsList(startYear){
+  const out = [];
+  for(let i=0;i<12;i++){
+    const m = (3+i) % 12; // 3 = April
+    const y = m>=3 ? startYear : startYear+1;
+    out.push({ key: y+'-'+String(m+1).padStart(2,'0'), label: new Date(y,m,1).toLocaleDateString('en-IN',{month:'short'}) });
+  }
+  return out;
+}
+// Every FY touched by at least one lead (created, or any Progress Date),
+// plus the current FY, newest first — so the selector is never empty, even
+// on a brand-new dataset, and never misses an older FY with real data.
+function availableFYStartYears(leads){
+  const set = new Set([fyStartYearOf(new Date())]);
+  leads.forEach(l=>{
+    const y = fyStartYearOf(l.createdAt); if(y!=null) set.add(y);
+    Object.values(l.milestoneDates||{}).forEach(v=>{ const vy = fyStartYearOf(v); if(vy!=null) set.add(vy); });
+  });
+  return Array.from(set).sort((a,b)=>b-a);
+}
+// Persists the Dashboard's selected FY across re-renders (set to the
+// current FY the first time the Dashboard renders — see renderDashboard()).
+let dashboardFY = null;
 function ownerStack(leads){
   const m = {};
   leads.forEach(l=>{ const n = leadCreatorName(l); m[n] = m[n] || [0,0,0]; if(l.outcome==='acquired') m[n][1]++; else if(l.outcome==='dropped') m[n][2]++; else m[n][0]++; });
@@ -3123,7 +3157,6 @@ function renderDashboard(){
   const villageAcres = {}; active.forEach(l=>{ const k = l.village||l.siteLocation||'—'; villageAcres[k] = (villageAcres[k]||0) + acres(l); });
   const villageItems = Object.entries(villageAcres).sort((a,b)=>b[1]-a[1]).map(([k,v])=>({ label:k, value:Number(v.toFixed(2)) }));
   const acquired = leads.filter(l=>l.outcome==='acquired').length, dropped = leads.filter(l=>l.outcome==='dropped').length;
-  const activeAcres = active.reduce((s,l)=>s+acres(l),0);
 
   // Progress Dates summary — how many leads have reached each of the 10
   // milestones on the Lead Details page's "Progress Dates" checklist (see
@@ -3134,16 +3167,40 @@ function renderDashboard(){
     return `<tr class="clickable-row" data-milestone="${f.key}"><td>${f.label}</td><td>${count}</td></tr>`;
   }).join('');
 
+  // Month-wise Summary (FY) — the same 10 Progress Date milestones plus
+  // Leads Created, broken down by calendar month within a selected
+  // financial year (Apr–Mar), so Sara can see e.g. how many leads were
+  // Site Visited or Purchased in any given month, not just the all-time
+  // totals the Milestone Dates table above shows.
+  const fyStartYears = availableFYStartYears(leads);
+  if(dashboardFY==null || !fyStartYears.includes(dashboardFY)) dashboardFY = fyStartYears[0];
+  const fyMonths = fyMonthsList(dashboardFY);
+  const createdCounts = fyMonths.map(m=>leads.filter(l=>String(l.createdAt||'').slice(0,7)===m.key).length);
+  const monthGridRows = [
+    { key:'', label:'Leads Created', counts: createdCounts, isCreated:true },
+    ...PROGRESS_DATE_FIELDS.map(f=>({
+      key:f.key, label:f.label,
+      counts: fyMonths.map(m=>leads.filter(l=>l.milestoneDates && String(l.milestoneDates[f.key]||'').slice(0,7)===m.key).length),
+    })),
+  ];
+  const monthGridHtml = monthGridRows.map(r=>{
+    const total = r.counts.reduce((a,b)=>a+b,0);
+    const cells = r.counts.map((c,i)=>{
+      const attr = r.isCreated ? `data-created-month="${fyMonths[i].key}"` : `data-milestone="${r.key}" data-milestone-month="${fyMonths[i].key}"`;
+      return `<td class="${c?'clickable-row':''}" ${c?attr:''} style="text-align:center;${c?'':'color:var(--muted);'}">${c||'—'}</td>`;
+    }).join('');
+    return `<tr><td><b>${r.label}</b></td>${cells}<td style="text-align:center;font-weight:700;">${total}</td></tr>`;
+  }).join('');
+  const fyOptionsHtml = fyStartYears.map(y=>`<option value="${y}" ${y===dashboardFY?'selected':''}>${fyLabel(y)}</option>`).join('');
+
   return `
     <div class="page-header"><h1>Dashboard</h1></div>
 
     <div class="kpi-row">
       <div class="card stat" data-drill="active"><div class="label">Active Leads</div><div class="value">${active.length}</div><div class="sub">${leads.length} total — click to view</div></div>
-      <div class="card stat" data-drill="active"><div class="label">Active Extent</div><div class="value">${chFmt(Number(activeAcres.toFixed(2)))}</div><div class="sub">acres across open leads</div></div>
       <div class="card stat"><div class="label">Acquired / Dropped</div><div class="value">${acquired} / ${dropped}</div><div class="sub">closed leads</div></div>
       <div class="card stat" data-drill="onHold"><div class="label">On Hold</div><div class="value">${onHoldCount}</div><div class="sub">click to view</div></div>
       <div class="card stat" data-drill="calls"><div class="label">Calls Due / Overdue</div><div class="value" style="color:${overdueCalls.length?'var(--danger)':'var(--navy)'}">${dueToday.length} / ${overdueCalls.length}</div><div class="sub">today / overdue — click to view</div></div>
-      <div class="card stat"><div class="label">Past Status SLA</div><div class="value" style="color:${ageingAlerts.length?'var(--danger)':'var(--navy)'}">${ageingAlerts.length}</div><div class="sub">see Ageing Alerts below</div></div>
     </div>
 
     <div class="dash-h1">Overview</div>
@@ -3183,6 +3240,15 @@ function renderDashboard(){
     <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">How many leads have reached each milestone so far (Progress Dates, set on a lead's own page). Click a row to see those leads.</p>
     <div class="card" style="padding:0;overflow-x:auto;">
       <table><tr><th>Milestone</th><th>Leads Reached</th></tr>${milestoneRows}</table>
+    </div>
+
+    <div class="dash-h2" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:20px;">
+      <span>Month-wise Summary</span>
+      <div style="width:150px;"><select id="dash-fy">${fyOptionsHtml}</select></div>
+    </div>
+    <p style="font-size:12.5px;color:var(--muted);margin-top:-8px;">Leads Created and each Progress Date milestone, month by month across ${fyLabel(dashboardFY)} (Apr–Mar). Click any count to see those leads.</p>
+    <div class="card" style="padding:0;overflow-x:auto;">
+      <table><tr><th>Metric</th>${fyMonths.map(m=>`<th style="text-align:center;">${m.label}</th>`).join('')}<th style="text-align:center;">FY Total</th></tr>${monthGridHtml}</table>
     </div>
   `;
 }
@@ -6101,7 +6167,15 @@ function wireViewEvents(){
     document.querySelectorAll('[data-source]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ source: el.dataset.source })));
     document.querySelectorAll('[data-cp]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ channelPartner: el.dataset.cp })));
     document.querySelectorAll('[data-creator]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ createdBy: el.dataset.creator })));
-    document.querySelectorAll('[data-milestone]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ milestone: el.dataset.milestone })));
+    // Month-wise Summary cells carry BOTH data-milestone and
+    // data-milestone-month, so they must be wired before the plain
+    // all-time data-milestone rows above, or this more specific click
+    // would also (harmlessly) re-fire that one's handler.
+    document.querySelectorAll('[data-milestone-month]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ milestone: el.dataset.milestone, milestoneMonth: el.dataset.milestoneMonth })));
+    document.querySelectorAll('[data-milestone]:not([data-milestone-month])').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ milestone: el.dataset.milestone })));
+    document.querySelectorAll('[data-created-month]').forEach(el=>el.addEventListener('click', ()=>goToLeadsList({ createdMonth: el.dataset.createdMonth })));
+    const fySel = document.getElementById('dash-fy');
+    if(fySel) fySel.addEventListener('change', () => { dashboardFY = parseInt(fySel.value, 10); render(); });
     document.querySelectorAll('[data-open-id]').forEach(el=>el.addEventListener('click', ()=>openLeadDetail(el.dataset.openId)));
   }
 
