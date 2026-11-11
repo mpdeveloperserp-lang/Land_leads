@@ -249,6 +249,31 @@
   .field-pair{display:flex;gap:6px;}
   .field-pair input{flex:1;}
   .field-pair select{flex:0 0 100px;}
+  /* ---- Universal searchable dropdown (every <select> in the app) --------
+     Sara wants every dropdown to look/behave like her IN4Suite reference:
+     a clickable box that opens a panel with a search bar on top and a
+     scrollable, checkmarked option list, instead of the browser's plain
+     native dropdown. See the enhanceSelects() component in the script for
+     the behavior; these rules are just its look. */
+  .csel-wrap{position:relative;display:inline-block;width:100%;vertical-align:top;}
+  .field-pair .csel-wrap{flex:0 0 100px;}
+  .inline-add .csel-wrap{flex:1;min-width:120px;}
+  select.csel-native{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;}
+  .csel-display{width:100%;padding:8px 9px;border:1px solid var(--border);border-radius:6px;font-size:13.5px;font-family:inherit;background:#fff;color:var(--text);text-align:left;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px;line-height:1.3;}
+  .csel-display::after{content:'';flex:0 0 auto;width:0;height:0;border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid var(--muted);margin-left:4px;transition:transform .12s;}
+  .csel-display.csel-open{border-color:var(--teal);box-shadow:0 0 0 2px rgba(0,150,150,.12);}
+  .csel-display.csel-open::after{transform:rotate(180deg);}
+  .csel-display.csel-placeholder{color:var(--muted);}
+  .csel-display.csel-disabled{background:#f3f4f6;color:var(--muted);cursor:not-allowed;}
+  .csel-panel{position:fixed;background:#fff;border:1px solid var(--border);border-radius:8px;box-shadow:0 10px 30px rgba(15,20,35,.18);z-index:9999;overflow:hidden;display:flex;flex-direction:column;max-height:260px;}
+  .csel-search{border:none;border-bottom:1px solid var(--border);padding:9px 10px;font-size:13px;font-family:inherit;outline:none;flex:0 0 auto;}
+  .csel-list{overflow-y:auto;flex:1 1 auto;}
+  .csel-option{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:13px;cursor:pointer;}
+  .csel-option:hover,.csel-option.csel-selected{background:#F5F6FC;}
+  .csel-option.csel-selected{font-weight:600;color:var(--navy);}
+  .csel-check{width:14px;flex:0 0 auto;color:var(--teal);font-weight:700;}
+  .csel-opt-disabled{opacity:.5;cursor:not-allowed;}
+  .csel-empty{padding:10px;font-size:12.5px;color:var(--muted);font-style:italic;}
   .computed{font-size:11.5px;color:var(--teal);margin-top:3px;font-weight:600;}
   fieldset{border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin:0 0 16px;}
   legend{font-size:12.5px;font-weight:700;color:var(--navy);padding:0 6px;}
@@ -508,25 +533,11 @@ function fieldIsVisible(el){
   const wrap = el && el.closest('[data-field]');
   return !wrap || wrap.style.display !== 'none';
 }
-// Lightweight "search box filters this select's options" — no library, just
-// hides non-matching <option>s (Sara: "provide filter options for selecting
-// CP or landowner or mediator"). The blank/"— none —" option always stays.
-function wireSelectFilter(searchInputId, selectId){
-  const input = document.getElementById(searchInputId);
-  const select = document.getElementById(selectId);
-  if(!input || !select) return;
-  input.addEventListener('input', () => {
-    const q = input.value.trim().toLowerCase();
-    Array.from(select.options).forEach(opt=>{
-      if(!opt.value){ opt.hidden = false; return; }
-      opt.hidden = !!q && !opt.textContent.toLowerCase().includes(q);
-    });
-  });
-}
 // Wires the Lead-Source-driven show/hide for Channel Partner / Mediator /
-// Landowner, the search filter on each of their selects, and auto-filling
-// Contact Number from whichever one gets picked (Sara: "there is a contact
-// number field it should automatically fill based on master"). Shared by
+// Landowner and auto-fills Contact Number from whichever one gets picked
+// (Sara: "there is a contact number field it should automatically fill
+// based on master"). The search box on each of their dropdowns is now the
+// universal enhanceSelects() panel search, not a per-field helper. Shared by
 // the New Lead form ('nl') and the Lead Details Modify form ('ov-e').
 // fcfgVisible, when passed, lets a field Configure already hid stay hidden
 // regardless of Lead Source (New Lead respects Configure's Visible flag;
@@ -552,7 +563,13 @@ function wireSourceDependentFields(prefix, fcfgVisible){
     Object.entries(groupFieldIds).forEach(([g,id])=>{
       if(g===group) return;
       const el = document.getElementById(id);
-      if(el && el.value) el.value = '';
+      if(el && el.value){
+        el.value = '';
+        // el.value= doesn't fire a DOM mutation, so the universal dropdown's
+        // own display button won't notice on its own — tell it directly so
+        // it doesn't keep showing the stale selection after switching away.
+        if(typeof refreshSelectDisplay === 'function') refreshSelectDisplay(el);
+      }
     });
     applyVisibility();
   });
@@ -564,10 +581,6 @@ function wireSourceDependentFields(prefix, fcfgVisible){
   if(medSel) medSel.addEventListener('change', () => fillContact(mediatorFromSelect(prefix+'-med', null).mediatorPhone));
   const ownerSel = document.getElementById(prefix+'-owner');
   if(ownerSel) ownerSel.addEventListener('change', () => fillContact(landownerFromSelect(prefix+'-owner', null).landownerPhone));
-
-  wireSelectFilter(prefix+'-cp-search', prefix+'-cp');
-  wireSelectFilter(prefix+'-med-search', prefix+'-med');
-  wireSelectFilter(prefix+'-owner-search', prefix+'-owner');
 }
 // Red asterisk for every mandatory field label, app-wide.
 const REQ = ' <span class="req-star">*</span>';
@@ -2517,6 +2530,179 @@ let auditTrailFilters = { entityType:'', actor:'', dateFrom:'', dateTo:'' };
 // leaving the app entirely. suppressHistoryPush prevents the popstate
 // handler's own render() call from pushing a duplicate entry.
 let suppressHistoryPush = false;
+
+// ============================================================================
+// Universal searchable dropdown ("combo select") — Sara: every dropdown in
+// the app should open like her IN4Suite reference screenshot (a click-to-
+// open panel with a search box on top and a scrollable option list) instead
+// of the browser's plain native popup. She chose single-select (pick one,
+// panel closes) over true multi-select checkboxes.
+//
+// This is a pure visual layer: every native <select> stays the real,
+// functioning element — its .value, .disabled, .addEventListener('change',
+// …) all keep working exactly as before, so every bit of existing code that
+// reads or sets a select's value needed zero changes. The <select> itself is
+// just made invisible (opacity:0, not display:none, so it stays usable) and
+// overlaid with a styled button; clicking the button opens a panel — built
+// fresh from the select's *current* <option>s every time, so it's always
+// correct even if a select's options get swapped out after the fact (e.g.
+// the "Reports To" list repopulating when Role changes) — and picking a row
+// sets the real select's value and fires real 'change'/'input' events, so
+// every existing addEventListener('change', …) elsewhere in the app fires
+// exactly as if the user had used a native dropdown.
+//
+// A MutationObserver on the whole document means this needs no manual hook
+// at every render()/modal-open call site: any <select> that ever enters the
+// DOM — a full view re-render, a modal, anything — gets enhanced the moment
+// it appears. The one thing a MutationObserver can't see is code setting
+// `select.value = …` directly (that's a property write, not a DOM
+// mutation) — the one place in this app that does that (clearing a
+// now-hidden CP/Mediator/Landowner selection in wireSourceDependentFields)
+// calls refreshSelectDisplay() itself right after, which is the only manual
+// hook this component needs anywhere.
+(function(){
+  const CSEL_FLAG = '__cselEnhanced';
+  let openState = null; // { select, panel, display, close() }
+
+  function closeOpenPanel(){
+    if(openState){ openState.close(); openState = null; }
+  }
+  document.addEventListener('mousedown', (e) => {
+    if(!openState) return;
+    if(openState.display.contains(e.target) || openState.panel.contains(e.target)) return;
+    closeOpenPanel();
+  });
+  window.addEventListener('resize', closeOpenPanel);
+  // Closing on any scroll (except scrolling inside the open panel's own
+  // list) keeps this simple — no need to track/reposition a fixed panel
+  // while the page under it moves.
+  window.addEventListener('scroll', (e) => {
+    if(!openState) return;
+    if(openState.panel.contains(e.target)) return;
+    closeOpenPanel();
+  }, true);
+  document.addEventListener('keydown', (e) => { if(e.key==='Escape' && openState) closeOpenPanel(); });
+
+  function currentOptionText(select){
+    const opt = Array.from(select.options).find(o => o.value === select.value);
+    if(opt) return opt.textContent;
+    return select.options.length ? select.options[0].textContent : '';
+  }
+  function refreshDisplay(select){
+    const display = select.__cselDisplay;
+    if(!display) return;
+    const text = currentOptionText(select);
+    display.textContent = text || ' ';
+    display.classList.toggle('csel-placeholder', !text);
+    display.disabled = !!select.disabled;
+    display.classList.toggle('csel-disabled', !!select.disabled);
+  }
+  window.refreshSelectDisplay = refreshDisplay;
+
+  function openPanelFor(select, display){
+    const panel = document.createElement('div');
+    panel.className = 'csel-panel';
+    document.body.appendChild(panel);
+    display.classList.add('csel-open');
+
+    function renderRows(filterText){
+      const q = (filterText||'').trim().toLowerCase();
+      const opts = Array.from(select.options);
+      const rows = opts.filter(o => !q || o.textContent.toLowerCase().includes(q));
+      panel.innerHTML =
+        '<input type="text" class="csel-search" placeholder="Search…" autocomplete="off">' +
+        '<div class="csel-list" role="listbox">' +
+        (rows.length ? rows.map(o => {
+          const isSel = o.value === select.value;
+          return '<div class="csel-option' + (isSel?' csel-selected':'') + (o.disabled?' csel-opt-disabled':'') + '" data-value="' + String(o.value).replace(/"/g,'&quot;') + '" role="option">' +
+            '<span class="csel-check">' + (isSel ? '&#10003;' : '') + '</span><span class="csel-opt-text">' + (o.textContent || ' ') + '</span></div>';
+        }).join('') : '<div class="csel-empty">No matches</div>') +
+        '</div>';
+      const search = panel.querySelector('.csel-search');
+      search.value = filterText || '';
+      search.addEventListener('input', () => renderRows(search.value));
+      search.addEventListener('keydown', (e) => { e.stopPropagation(); if(e.key==='Escape'){ closeOpenPanel(); display.focus(); } });
+      panel.querySelectorAll('.csel-option:not(.csel-opt-disabled)').forEach(row => {
+        row.addEventListener('click', () => {
+          const v = row.dataset.value;
+          if(select.value !== v){
+            select.value = v;
+            select.dispatchEvent(new Event('change', { bubbles:true }));
+            select.dispatchEvent(new Event('input', { bubbles:true }));
+          }
+          refreshDisplay(select);
+          closeOpenPanel();
+          display.focus();
+        });
+      });
+    }
+    renderRows('');
+
+    const r = display.getBoundingClientRect();
+    const maxH = 260;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const openUp = spaceBelow < maxH && r.top > spaceBelow;
+    panel.style.left = Math.round(r.left) + 'px';
+    panel.style.width = Math.round(Math.max(r.width, 180)) + 'px';
+    if(openUp){ panel.style.bottom = Math.round(window.innerHeight - r.top) + 'px'; }
+    else { panel.style.top = Math.round(r.bottom) + 'px'; }
+
+    const search = panel.querySelector('.csel-search');
+    if(search) search.focus();
+
+    openState = {
+      select, panel, display,
+      close(){ display.classList.remove('csel-open'); panel.remove(); },
+    };
+  }
+
+  function enhanceOneSelect(select){
+    if(!select || select.tagName !== 'SELECT' || select.multiple) return; // multi-select isn't used anywhere in this app
+    if(select[CSEL_FLAG]){ refreshDisplay(select); return; }
+    select[CSEL_FLAG] = true;
+
+    const wrap = document.createElement('span');
+    wrap.className = 'csel-wrap';
+    select.parentNode.insertBefore(wrap, select);
+    wrap.appendChild(select);
+    select.classList.add('csel-native');
+    select.tabIndex = -1; // clicks/tabs go to the button instead; .value & events still work for any code (or test) that uses them directly
+
+    const display = document.createElement('button');
+    display.type = 'button';
+    display.className = 'csel-display';
+    display.setAttribute('aria-haspopup', 'listbox');
+    wrap.appendChild(display);
+    select.__cselDisplay = display;
+
+    display.addEventListener('click', (e) => {
+      e.preventDefault();
+      if(select.disabled) return;
+      if(openState && openState.select === select){ closeOpenPanel(); return; }
+      closeOpenPanel();
+      openPanelFor(select, display);
+    });
+
+    refreshDisplay(select);
+  }
+
+  window.enhanceSelects = function enhanceSelects(root){
+    (root || document).querySelectorAll('select').forEach(enhanceOneSelect);
+  };
+
+  const mo = new MutationObserver((mutations) => {
+    for(const m of mutations){
+      m.addedNodes.forEach(node => {
+        if(node.nodeType !== 1) return;
+        if(node.tagName === 'OPTION'){ const sel = node.closest('select'); if(sel) refreshDisplay(sel); return; }
+        if(node.tagName === 'SELECT'){ enhanceOneSelect(node); return; }
+        if(node.querySelectorAll) node.querySelectorAll('select').forEach(enhanceOneSelect);
+      });
+    }
+  });
+  function start(){ mo.observe(document.body, { childList:true, subtree:true }); enhanceSelects(document); }
+  if(document.body) start(); else document.addEventListener('DOMContentLoaded', start);
+})();
 
 function render(){
   if(currentUser) backfillMilestoneDatesOnce();
@@ -4928,7 +5114,6 @@ function renderNewLeadView(){
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
         <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
-          <input type="text" id="nl-cp-search" placeholder="Search channel partner…" style="margin-bottom:4px;">
           <select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${assignableUsers().map(e=>`<option value="${e.name}" ${currentUser && e.uid===currentUser.uid ? 'selected' : ''}>${assigneeLabel(e)}</option>`).join('')}</select></div>
@@ -4943,11 +5128,9 @@ function renderNewLeadView(){
         <div data-field="roadWidth"><label>Road Width (ft)</label><input type="number" id="nl-road" step="0.1"></div>
         <div data-field="frontage"><label>Frontage (ft)</label><input type="number" id="nl-frontage" step="0.1"></div>
         <div data-field="landownerName"><label>Landowner</label>
-          <input type="text" id="nl-owner-search" placeholder="Search landowner…" style="margin-bottom:4px;">
           <select id="nl-owner">${landownerOptionsHtml('')}</select>
         </div>
         <div data-field="mediatorName"><label>Mediator / Broker</label>
-          <input type="text" id="nl-med-search" placeholder="Search mediator / broker…" style="margin-bottom:4px;">
           <select id="nl-med">${mediatorOptionsHtml('')}</select>
         </div>
         <div data-field="firstCallDate"><label>First Call Made</label><input type="date" id="nl-firstcall"></div>
@@ -5372,7 +5555,6 @@ function renderOverviewTab(l){
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
         <div data-field="channelPartnerCode"><label>Channel Partner</label>
-          <input type="text" id="ov-e-cp-search" placeholder="Search channel partner…" style="margin-bottom:4px;">
           <select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
         </div>
 
@@ -5390,11 +5572,9 @@ function renderOverviewTab(l){
         <div><label>Road Width (ft)</label><input type="number" id="ov-e-road" step="0.1" value="${l.roadWidth!=null?l.roadWidth:''}"></div>
         <div><label>Frontage (ft)</label><input type="number" id="ov-e-frontage" step="0.1" value="${l.frontage!=null?l.frontage:''}"></div>
         <div data-field="landownerName"><label>Landowner</label>
-          <input type="text" id="ov-e-owner-search" placeholder="Search landowner…" style="margin-bottom:4px;">
           <select id="ov-e-owner">${landownerOptionsHtml(l.landownerName)}</select>
         </div>
         <div data-field="mediatorName"><label>Mediator / Broker</label>
-          <input type="text" id="ov-e-med-search" placeholder="Search mediator / broker…" style="margin-bottom:4px;">
           <select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select>
         </div>
         <div><label>First Call Made</label><input type="date" id="ov-e-firstcall" value="${l.firstCallDate||''}"></div>
