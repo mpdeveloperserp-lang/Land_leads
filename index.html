@@ -464,6 +464,111 @@ function mediatorFromSelect(selId, lead){
   const m = DB.getMasters('mediators').find(x=>x.code===v);
   return m ? { mediatorCode: m.code, mediatorName: m.name||'', mediatorPhone: m.phone||'' } : { mediatorCode:'', mediatorName:'', mediatorPhone:'' };
 }
+// Landowners — same "pick from a master, copy name/phone onto the lead"
+// pattern as Mediators/Brokers above (Sara: Landowner should be a selectable
+// field with a filter, same as Channel Partner/Mediator, not free-typed).
+// Keyed by landownerCode from the Landowners master (fullName/contactNumber).
+function landownerOptionsHtml(selectedName){
+  const list = DB.getLandowners ? DB.getLandowners() : [];
+  const legacy = selectedName && !list.some(o=>o.fullName===selectedName) ? `<option value="__legacy" selected>${selectedName} (old entry)</option>` : '';
+  return `<option value="">— none —</option>${legacy}` + list.map(o=>`<option value="${o.landownerCode}" ${o.fullName===selectedName?'selected':''}>${o.landownerCode} — ${o.fullName}${o.contactNumber?' · '+o.contactNumber:''}</option>`).join('');
+}
+function landownerFromSelect(selId, lead){
+  const v = document.getElementById(selId)?.value || '';
+  if(!v) return { landownerCode:'', landownerName:'', landownerPhone:'' };
+  if(v==='__legacy') return { landownerCode: (lead&&lead.landownerCode)||'', landownerName: (lead&&lead.landownerName)||'', landownerPhone: (lead&&lead.landownerPhone)||'' };
+  const list = DB.getLandowners ? DB.getLandowners() : [];
+  const o = list.find(x=>x.landownerCode===v);
+  return o ? { landownerCode: o.landownerCode, landownerName: o.fullName||'', landownerPhone: o.contactNumber||'' } : { landownerCode:'', landownerName:'', landownerPhone:'' };
+}
+// Channel Partners — only the phone lookup is needed as a standalone helper
+// (the code itself is already read straight off the select elsewhere); used
+// to auto-fill Contact Number when a Channel Partner is picked.
+function channelPartnerFromSelect(selId){
+  const v = document.getElementById(selId)?.value || '';
+  if(!v) return { channelPartnerCode:'', channelPartnerPhone:'' };
+  const cp = visibleChannelPartners().find(x=>x.code===v);
+  return cp ? { channelPartnerCode: cp.code, channelPartnerPhone: cp.phone||'' } : { channelPartnerCode:v, channelPartnerPhone:'' };
+}
+// ---- Lead Source -> which of Channel Partner / Mediator / Landowner shows -
+// Sara: these three only ever apply to ONE kind of source at a time, so show
+// just the one matching the selected Lead Source (hide the other two)
+// instead of all three fields all the time. Matched by exact label text
+// against whatever's currently in the (admin-editable) Lead Sources master.
+function sourceFieldGroup(sourceLabel){
+  if(sourceLabel==='Channel Partner') return 'cp';
+  if(sourceLabel==='Broker') return 'mediator';
+  if(sourceLabel==='Land Owner') return 'landowner';
+  return null;
+}
+// A field counts as "visible" for mandatory-enforcement purposes only when
+// its data-field wrapper isn't display:none — whether that's Configure's own
+// Visible flag or this new Lead-Source-driven toggle hiding it.
+function fieldIsVisible(el){
+  const wrap = el && el.closest('[data-field]');
+  return !wrap || wrap.style.display !== 'none';
+}
+// Lightweight "search box filters this select's options" — no library, just
+// hides non-matching <option>s (Sara: "provide filter options for selecting
+// CP or landowner or mediator"). The blank/"— none —" option always stays.
+function wireSelectFilter(searchInputId, selectId){
+  const input = document.getElementById(searchInputId);
+  const select = document.getElementById(selectId);
+  if(!input || !select) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    Array.from(select.options).forEach(opt=>{
+      if(!opt.value){ opt.hidden = false; return; }
+      opt.hidden = !!q && !opt.textContent.toLowerCase().includes(q);
+    });
+  });
+}
+// Wires the Lead-Source-driven show/hide for Channel Partner / Mediator /
+// Landowner, the search filter on each of their selects, and auto-filling
+// Contact Number from whichever one gets picked (Sara: "there is a contact
+// number field it should automatically fill based on master"). Shared by
+// the New Lead form ('nl') and the Lead Details Modify form ('ov-e').
+// fcfgVisible, when passed, lets a field Configure already hid stay hidden
+// regardless of Lead Source (New Lead respects Configure's Visible flag;
+// Modify never has, so it's omitted there — unchanged existing behavior).
+function wireSourceDependentFields(prefix, fcfgVisible){
+  const applyVisibility = () => {
+    const sourceSel = document.getElementById(prefix+'-source');
+    const group = sourceSel ? sourceFieldGroup(sourceSel.value) : null;
+    ['channelPartnerCode','mediatorName','landownerName'].forEach(key=>{
+      const wrap = document.querySelector(`[data-field="${key}"]`);
+      if(!wrap) return;
+      const configVisible = fcfgVisible ? fcfgVisible(key) : true;
+      const groupKey = key==='channelPartnerCode' ? 'cp' : key==='mediatorName' ? 'mediator' : 'landowner';
+      const belongs = group === groupKey;
+      wrap.style.display = (configVisible && belongs) ? '' : 'none';
+    });
+  };
+  applyVisibility();
+  const sourceSel = document.getElementById(prefix+'-source');
+  if(sourceSel) sourceSel.addEventListener('change', () => {
+    const group = sourceFieldGroup(sourceSel.value);
+    const groupFieldIds = { cp: prefix+'-cp', mediator: prefix+'-med', landowner: prefix+'-owner' };
+    Object.entries(groupFieldIds).forEach(([g,id])=>{
+      if(g===group) return;
+      const el = document.getElementById(id);
+      if(el && el.value) el.value = '';
+    });
+    applyVisibility();
+  });
+
+  const fillContact = (phone) => { const el = document.getElementById(prefix+'-contact'); if(phone && el) el.value = phone; };
+  const cpSel = document.getElementById(prefix+'-cp');
+  if(cpSel) cpSel.addEventListener('change', () => fillContact(channelPartnerFromSelect(prefix+'-cp').channelPartnerPhone));
+  const medSel = document.getElementById(prefix+'-med');
+  if(medSel) medSel.addEventListener('change', () => fillContact(mediatorFromSelect(prefix+'-med', null).mediatorPhone));
+  const ownerSel = document.getElementById(prefix+'-owner');
+  if(ownerSel) ownerSel.addEventListener('change', () => fillContact(landownerFromSelect(prefix+'-owner', null).landownerPhone));
+
+  wireSelectFilter(prefix+'-cp-search', prefix+'-cp');
+  wireSelectFilter(prefix+'-med-search', prefix+'-med');
+  wireSelectFilter(prefix+'-owner-search', prefix+'-owner');
+}
 // Red asterisk for every mandatory field label, app-wide.
 const REQ = ' <span class="req-star">*</span>';
 // Pulls a lat/long out of whatever was typed/pasted into the Location Pin
@@ -937,8 +1042,10 @@ const DEFAULT_FIELD_CONFIG = [
   { field:'extent',             label:'Total Land Extent',      visible:true, mandatory:true,  filter:false },
   { field:'roadWidth',          label:'Road Width (ft)',        visible:true, mandatory:false, filter:false },
   { field:'frontage',           label:'Frontage (ft)',          visible:true, mandatory:false, filter:false },
-  { field:'landownerName',      label:'Landowner Name',         visible:true, mandatory:false, filter:false },
-  { field:'landownerPhone',     label:'Landowner Phone',        visible:true, mandatory:false, filter:false },
+  // Landowner Phone is no longer its own configurable field — like
+  // mediatorPhone, it's derived from the selected Landowner master record
+  // (see landownerFromSelect()), not typed in separately.
+  { field:'landownerName',      label:'Landowner',              visible:true, mandatory:false, filter:false },
   { field:'mediatorName',       label:'Mediator / Broker',      visible:true, mandatory:false, filter:true },
   { field:'firstCallDate',      label:'First Call Made',        visible:true, mandatory:false, filter:false },
   { field:'siteVisitDate',      label:'Site Visit Date',        visible:true, mandatory:false, filter:false },
@@ -970,7 +1077,7 @@ const FIELD_TO_INPUT = {
   assignedExecutive:['nl-exec'], village:['nl-village'], surveyNumber:['nl-survey'],
   siteLocation:['nl-loc'], googlePin:['nl-pin'], landClassification:['nl-class'],
   extent:['nl-extent-val'],
-  landownerName:['nl-owner-name'], landownerPhone:['nl-owner-phone'],
+  landownerName:['nl-owner'],
   mediatorName:['nl-med'], nextCallDate:['nl-nextcall'],
   contactNumber:['nl-contact'], landIdentificationName:['nl-landname'], roadWidth:['nl-road'], frontage:['nl-frontage'],
   firstCallDate:['nl-firstcall'], siteVisitDate:['nl-sitevisit'],
@@ -1009,12 +1116,15 @@ const PREFERRED_CONTACT_METHODS = ['Phone','Email','WhatsApp','Postal','Other'];
 
 function seedMaster(key){
   const data = {
-    leadSources: ['Website Enquiry','Channel Partner','Direct / Walk-in','Referral','Field Survey','Cold Call','Other'].map(label=>({label})),
+    leadSources: ['Website Enquiry','Channel Partner','Direct / Walk-in','Referral','Field Survey','Cold Call','Land Owner','Broker','Other'].map(label=>({label})),
     channelPartners: [
       {code:'CP-007', name:'Anand Associates', phone:'9840012345', commissionPct:1.5},
       {code:'CP-014', name:'Elite Land Brokers', phone:'9884098840', commissionPct:2},
     ],
-    mediators: [],
+    mediators: [
+      {code:'MED-001', name:'Suresh Kumar', phone:'9840033333', commissionPct:1},
+      {code:'MED-002', name:'Ravi Shankar', phone:'9840044444', commissionPct:1.5},
+    ],
     villages: ['Oragadam','Guduvancheri','Thiruporur','Sriperumbudur','Mahabalipuram','Chengalpattu','Padappai','Vandalur'].map(name=>({name, taluk:'', district:'Chennai / Kancheepuram'})),
     landClasses: LAND_CLASS_TYPES.map(label=>({label})),
     dropReasons: ['Price mismatch','Title / legal issue','Owner unwilling','Land unsuitable (technical)','Budget not approved','Lost to competitor','Other'].map(label=>({label})),
@@ -2354,7 +2464,7 @@ function showBootstrapScreen(){
 
 // ---- App state ---------------------------------------------------------
 let currentView = 'dashboard';
-const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, milestone:'', letter:'', q:'' };
+const DEFAULT_FILTERS = { stage:'', landClass:'', mediator:'', landowner:'', createdBy:'', source:'', exec:'', channelPartner:'', dateFrom:'', dateTo:'', excludeClosed:false, onHold:false, callDueOrOverdue:false, milestone:'', letter:'', q:'' };
 let listFilters = Object.assign({}, DEFAULT_FILTERS);
 let listPage = 1;
 const PAGE_SIZE = 15;
@@ -2545,6 +2655,7 @@ function leadMatchesFilters(l, f){
   if(f.source && l.leadSource !== f.source) return false;
   if(f.landClass && (l.landClassification||'') !== f.landClass) return false;
   if(f.mediator && (l.mediatorName||'') !== f.mediator) return false;
+  if(f.landowner && (l.landownerName||'') !== f.landowner) return false;
   if(f.createdBy && leadCreatorName(l) !== f.createdBy) return false;
   if(f.channelPartner && l.channelPartnerCode !== f.channelPartner) return false;
   if(f.exec && l.assignedExecutive !== f.exec) return false;
@@ -3404,6 +3515,9 @@ function renderList(){
         <div><label>Mediator / Broker</label><select id="lf-mediator">
           <option value="">All mediators</option>${[...new Set(DB.getMasters('mediators').map(m=>m.name).concat(allLeads.map(l=>l.mediatorName)).filter(Boolean))].sort().map(n=>`<option value="${n}" ${listFilters.mediator===n?'selected':''}>${n}</option>`).join('')}
         </select></div>
+        <div><label>Landowner</label><select id="lf-landowner">
+          <option value="">All landowners</option>${[...new Set((DB.getLandowners?DB.getLandowners():[]).map(o=>o.fullName).concat(allLeads.map(l=>l.landownerName)).filter(Boolean))].sort().map(n=>`<option value="${n}" ${listFilters.landowner===n?'selected':''}>${n}</option>`).join('')}
+        </select></div>
         <div><label>Land Classification Type</label><select id="lf-class">
           <option value="">All types</option>${DB.getMasters('landClasses').map(c=>`<option value="${c.label}" ${listFilters.landClass===c.label?'selected':''}>${c.label}</option>`).join('')}
         </select></div>
@@ -3464,6 +3578,7 @@ function wireListEvents(){
     listFilters.stage = val('lf-stage');
     if(document.getElementById('lf-class')) listFilters.landClass = val('lf-class');
     if(document.getElementById('lf-mediator')) listFilters.mediator = val('lf-mediator');
+    if(document.getElementById('lf-landowner')) listFilters.landowner = val('lf-landowner');
     if(document.getElementById('lf-creator')) listFilters.createdBy = val('lf-creator');
     // Source/Channel Partner/Executive filters can be hidden via the Configure
     // page's Filter flag — only read them when actually rendered.
@@ -4812,7 +4927,10 @@ function renderNewLeadView(){
         <div data-field="contactNumber"><label>Contact Number</label><input type="text" id="nl-contact" ${PHONE_ATTRS}></div>
         <div data-field="leadSourceDateTime"><label>Lead Source Date/Time</label><input type="datetime-local" id="nl-datetime" value="${new Date().toISOString().slice(0,16)}"></div>
         <div data-field="leadSource"><label>Lead Source</label><select id="nl-source">${sources.map(s=>`<option value="${s.label}">${s.label}</option>`).join('') || '<option value="">No sources defined — add one under Masters</option>'}</select></div>
-        <div data-field="channelPartnerCode"><label>Channel Partner</label><select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div data-field="channelPartnerCode"><label>Channel Partner</label>
+          <input type="text" id="nl-cp-search" placeholder="Search channel partner…" style="margin-bottom:4px;">
+          <select id="nl-cp"><option value="">— none —</option>${cps.map(c=>`<option value="${c.code}">${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
+        </div>
         <div data-field="assignedExecutive"><label>Assigned Executive</label><select id="nl-exec"><option value="">— unassigned —</option>${assignableUsers().map(e=>`<option value="${e.name}" ${currentUser && e.uid===currentUser.uid ? 'selected' : ''}>${assigneeLabel(e)}</option>`).join('')}</select></div>
         <div data-field="village"><label>Village Name</label><select id="nl-village"><option value="">Select village</option>${villages.map(v=>`<option value="${v.name}">${v.name}</option>`).join('')}</select></div>
         <div data-field="surveyNumber"><label>Survey Number(s)</label><input type="text" id="nl-survey"></div>
@@ -4824,9 +4942,14 @@ function renderNewLeadView(){
         </div>
         <div data-field="roadWidth"><label>Road Width (ft)</label><input type="number" id="nl-road" step="0.1"></div>
         <div data-field="frontage"><label>Frontage (ft)</label><input type="number" id="nl-frontage" step="0.1"></div>
-        <div data-field="landownerName"><label>Landowner Name</label><input type="text" id="nl-owner-name"></div>
-        <div data-field="landownerPhone"><label>Landowner Phone</label><input type="text" id="nl-owner-phone" ${PHONE_ATTRS}></div>
-        <div data-field="mediatorName"><label>Mediator / Broker</label><select id="nl-med">${mediatorOptionsHtml('')}</select></div>
+        <div data-field="landownerName"><label>Landowner</label>
+          <input type="text" id="nl-owner-search" placeholder="Search landowner…" style="margin-bottom:4px;">
+          <select id="nl-owner">${landownerOptionsHtml('')}</select>
+        </div>
+        <div data-field="mediatorName"><label>Mediator / Broker</label>
+          <input type="text" id="nl-med-search" placeholder="Search mediator / broker…" style="margin-bottom:4px;">
+          <select id="nl-med">${mediatorOptionsHtml('')}</select>
+        </div>
         <div data-field="firstCallDate"><label>First Call Made</label><input type="date" id="nl-firstcall"></div>
         <div data-field="siteVisitDate"><label>Site Visit Date</label><input type="date" id="nl-sitevisit"></div>
         <div data-field="nextCallDate"><label>Follow Up Date</label><input type="date" id="nl-nextcall"></div>
@@ -4857,6 +4980,7 @@ function wireNewLeadViewEvents(){
       if(lbl && !lbl.querySelector('.req-star')) lbl.innerHTML += REQ;
     }
   });
+  wireSourceDependentFields('nl', key => !(fcfg[key] && fcfg[key].visible===false));
 
   wireClassToggle('nl');
   mountPickerMap('nl', null);
@@ -4875,12 +4999,14 @@ function wireNewLeadViewEvents(){
   if(cancelBtn) cancelBtn.onclick = () => goToLeadsList({});
   const saveBtn = document.getElementById('save-nl');
   if(saveBtn) saveBtn.onclick = async () => {
-    // Enforce Mandatory flags from the Configure page (skip fields hidden by Visible=false).
+    // Enforce Mandatory flags from the Configure page (skip fields hidden by
+    // Visible=false, or currently hidden because they don't match the
+    // selected Lead Source — see wireSourceDependentFields()).
     for(const [key, ids] of Object.entries(FIELD_TO_INPUT)){
       const cfg = fcfg[key];
       if(cfg && cfg.mandatory && cfg.visible!==false){
         const el = document.getElementById(ids[0]);
-        if(el && !el.value.trim()){ alert((cfg.label||key) + ' is required.'); return; }
+        if(el && fieldIsVisible(el) && !el.value.trim()){ alert((cfg.label||key) + ' is required.'); return; }
       }
     }
     // Village is no longer hardcoded-required here — it now goes through
@@ -4889,7 +5015,7 @@ function wireNewLeadViewEvents(){
     // optional by default: it depends on a pre-registered Villages master
     // entry existing, which isn't always true when a lead needs logging
     // quickly, unlike Site Location which is free text).
-    const bpNew = badPhone([['Contact Number', document.getElementById('nl-contact').value], ['Landowner Phone', document.getElementById('nl-owner-phone').value]]);
+    const bpNew = badPhone([['Contact Number', document.getElementById('nl-contact').value]]);
     if(bpNew){ phoneAlert(bpNew); return; }
     const village = document.getElementById('nl-village').value.trim();
     const exec = document.getElementById('nl-exec').value.trim() || 'Unassigned';
@@ -4912,8 +5038,6 @@ function wireNewLeadViewEvents(){
       siteVisitDate: document.getElementById('nl-sitevisit').value,
       extentValue: parseFloat(document.getElementById('nl-extent-val').value)||0,
       extentUnit: document.getElementById('nl-extent-unit').value,
-      landownerName: document.getElementById('nl-owner-name').value.trim(),
-      landownerPhone: document.getElementById('nl-owner-phone').value.trim(),
       landownerJointOwners: 1,
       mediatorCommission:'',
       assignedExecutive: exec,
@@ -4932,7 +5056,7 @@ function wireNewLeadViewEvents(){
       createdByName: currentUser ? currentUser.name : '',
       stageHistory:[{stage:'new', at:new Date().toISOString(), by:(currentUser&&currentUser.name)||exec, note:'Lead created'}],
       reassignmentHistory:[],
-    }, readClassFields('nl'), mediatorFromSelect('nl-med', null));
+    }, readClassFields('nl'), mediatorFromSelect('nl-med', null), landownerFromSelect('nl-owner', null));
     await DB.addLead(lead);
     goToLeadsList({});
   };
@@ -5018,7 +5142,7 @@ const MODIFY_FIELD_INPUTS = {
   landIdentificationName:'ov-e-landname', siteLocation:'ov-e-loc', contactNumber:'ov-e-contact', leadSourceDateTime:'ov-e-datetime', leadSource:'ov-e-source',
   channelPartnerCode:'ov-e-cp', village:'ov-e-village', surveyNumber:'ov-e-survey',
   googlePin:'ov-e-pin', landClassification:'ov-e-class', extent:'ov-e-extent-val',
-  roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner-name', landownerPhone:'ov-e-owner-phone',
+  roadWidth:'ov-e-road', frontage:'ov-e-frontage', landownerName:'ov-e-owner',
   mediatorName:'ov-e-med', firstCallDate:'ov-e-firstcall', siteVisitDate:'ov-e-sitevisit', nextCallDate:'ov-e-nextcall',
 };
 function labelForInput(el){
@@ -5034,7 +5158,7 @@ function markModifyMandatory(){
   const fcfg = fieldConfigMap();
   Object.entries(MODIFY_FIELD_INPUTS).forEach(([field,id])=>{
     const cfg = fcfg[field]; const el = document.getElementById(id);
-    if(!cfg || !cfg.mandatory || cfg.visible===false || !el) return;
+    if(!cfg || !cfg.mandatory || cfg.visible===false || !el || !fieldIsVisible(el)) return;
     const lbl = labelForInput(el);
     if(lbl && !lbl.querySelector('.req-star')) lbl.insertAdjacentHTML('beforeend', REQ);
   });
@@ -5043,7 +5167,7 @@ function missingModifyMandatory(){
   const fcfg = fieldConfigMap();
   for(const [field,id] of Object.entries(MODIFY_FIELD_INPUTS)){
     const cfg = fcfg[field]; const el = document.getElementById(id);
-    if(cfg && cfg.mandatory && cfg.visible!==false && el && !String(el.value||'').trim()) return cfg.label || field;
+    if(cfg && cfg.mandatory && cfg.visible!==false && el && fieldIsVisible(el) && !String(el.value||'').trim()) return cfg.label || field;
   }
   return null;
 }
@@ -5058,6 +5182,7 @@ function wireLeadDetailViewEvents(){
   if(leadEditMode && canModifyLeadDetails(l)){
     mountPickerMap('ov-e', leadGeo(l));
     wireClassToggle('ov-e');
+    wireSourceDependentFields('ov-e');
     markModifyMandatory();
   } else {
     mountViewMap('ld-map', leadGeo(l));
@@ -5246,7 +5371,10 @@ function renderOverviewTab(l){
         <div><label>Contact Number</label><input type="text" id="ov-e-contact" ${PHONE_ATTRS} value="${l.contactNumber||''}"></div>
         <div><label>Lead Source</label><select id="ov-e-source">${sources.map(s=>`<option value="${s.label}" ${s.label===l.leadSource?'selected':''}>${s.label}</option>`).join('') || `<option value="${l.leadSource||''}">${l.leadSource||'No sources defined — add one under Masters'}</option>`}</select></div>
         <div><label>Lead Source Date</label><input type="datetime-local" id="ov-e-datetime" value="${dtVal}"></div>
-        <div><label>Channel Partner</label><select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}</option>`).join('')}</select></div>
+        <div data-field="channelPartnerCode"><label>Channel Partner</label>
+          <input type="text" id="ov-e-cp-search" placeholder="Search channel partner…" style="margin-bottom:4px;">
+          <select id="ov-e-cp"><option value="" ${!l.channelPartnerCode?'selected':''}>— none —</option>${cps.map(c=>`<option value="${c.code}" ${c.code===l.channelPartnerCode?'selected':''}>${c.code} — ${c.name}${c.phone?' · '+c.phone:''}</option>`).join('')}</select>
+        </div>
 
         <div><label>Lead Owner (Created By)</label><input type="text" value="${leadCreatorName(l)}" disabled></div>
         <div><label>Assigned Executive</label>${canAssign
@@ -5261,9 +5389,14 @@ function renderOverviewTab(l){
           <div class="field-pair"><input type="number" id="ov-e-extent-val" step="0.01" value="${l.extentValue!=null?l.extentValue:''}"><select id="ov-e-extent-unit">${unitOpts(l.extentUnit)}</select></div></div>
         <div><label>Road Width (ft)</label><input type="number" id="ov-e-road" step="0.1" value="${l.roadWidth!=null?l.roadWidth:''}"></div>
         <div><label>Frontage (ft)</label><input type="number" id="ov-e-frontage" step="0.1" value="${l.frontage!=null?l.frontage:''}"></div>
-        <div><label>Landowner Name</label><input type="text" id="ov-e-owner-name" value="${l.landownerName||''}"></div>
-        <div><label>Landowner Phone</label><input type="text" id="ov-e-owner-phone" ${PHONE_ATTRS} value="${l.landownerPhone||''}"></div>
-        <div><label>Mediator / Broker</label><select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select></div>
+        <div data-field="landownerName"><label>Landowner</label>
+          <input type="text" id="ov-e-owner-search" placeholder="Search landowner…" style="margin-bottom:4px;">
+          <select id="ov-e-owner">${landownerOptionsHtml(l.landownerName)}</select>
+        </div>
+        <div data-field="mediatorName"><label>Mediator / Broker</label>
+          <input type="text" id="ov-e-med-search" placeholder="Search mediator / broker…" style="margin-bottom:4px;">
+          <select id="ov-e-med">${mediatorOptionsHtml(l.mediatorName)}</select>
+        </div>
         <div><label>First Call Made</label><input type="date" id="ov-e-firstcall" value="${l.firstCallDate||''}"></div>
         <div><label>Site Visit Date</label><input type="date" id="ov-e-sitevisit" value="${l.siteVisitDate||''}"></div>
         <div><label>Follow Up Date</label><input type="date" id="ov-e-nextcall" value="${l.nextCallDate||''}"></div>
@@ -5638,7 +5771,7 @@ function wireDetailTabEvents(l){
     if(saveBtn) saveBtn.onclick = async () => {
       const missing = missingModifyMandatory();
       if(missing){ alert(missing + ' is required (fields marked with a red *).'); return; }
-      const bp = badPhone([['Contact Number', document.getElementById('ov-e-contact')?.value], ['Landowner Phone', document.getElementById('ov-e-owner-phone')?.value]]);
+      const bp = badPhone([['Contact Number', document.getElementById('ov-e-contact')?.value]]);
       if(bp){ phoneAlert(bp); return; }
       const val = id => document.getElementById(id)?.value;
       const numOrNull = id => { const v = parseFloat(val(id)); return isNaN(v) ? null : v; };
@@ -5659,12 +5792,10 @@ function wireDetailTabEvents(l){
         extentUnit: val('ov-e-extent-unit') || l.extentUnit,
         roadWidth: numOrNull('ov-e-road'),
         frontage: numOrNull('ov-e-frontage'),
-        landownerName: (val('ov-e-owner-name')||'').trim(),
-        landownerPhone: (val('ov-e-owner-phone')||'').trim(),
         firstCallDate: val('ov-e-firstcall') || '',
         siteVisitDate: val('ov-e-sitevisit') || '',
         nextCallDate: val('ov-e-nextcall') || '',
-      }, readClassFields('ov-e'), mediatorFromSelect('ov-e-med', l));
+      }, readClassFields('ov-e'), mediatorFromSelect('ov-e-med', l), landownerFromSelect('ov-e-owner', l));
       if(patch.landClassification && landClassKind(patch.landClassification)==='jv' && patch.jvLandownerPct!=null && (patch.jvLandownerPct<0 || patch.jvLandownerPct>100)){
         alert('JV Ratio must be between 0 and 100 for the landowner share.'); return;
       }
